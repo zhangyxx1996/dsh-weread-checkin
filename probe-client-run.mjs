@@ -564,21 +564,26 @@ function collectTitleAttrs(node, acc = []) {
 
   const tree = renderTree(panelComp);
   const txt = flattenText(tree);
-  assert.ok(txt.includes('停止打卡'), '无限模式进行中，按钮应是「停止打卡」，实际: ' + txt.slice(0, 120));
-  assert.ok(txt.includes('持续打卡中'), '应提示正在持续打卡');
+  // v1.1.3 起：停止入口挂在「继续打卡」按钮上，文案「停止打卡 · 已运行 N 分钟」
+  assert.ok(txt.includes('停止打卡'), '无限模式进行中，应出现「停止打卡」，实际: ' + txt.slice(0, 140));
+  assert.ok(txt.includes('已运行'), '运行时应显示「已运行 X 分钟」，不显示上报次数');
+  assert.ok(!/\d+\s*次上报中/.test(txt), '不应再显示「N 次上报中」');
+  assert.ok(!txt.includes('持续打卡中'), '旧的「持续打卡中」文案应已移除');
+  // 主按钮（今日状态位）此时必须仍是绿色达标、不可点，且不随运行变化
+  const mainBtn = findNode(tree, (n) => n.type === 'button'
+    && typeof n.props?.className === 'string'
+    && n.props.className.includes('wr-btn-done'));
+  assert.ok(mainBtn, '达标后主按钮应保持绿色 wr-btn-done');
+  assert.strictEqual(mainBtn.props.disabled, true, '达标主按钮应不可点（它是状态展示位）');
+  assert.ok(flattenText(mainBtn).includes('今日已达标'), '主按钮文案应仍是「今日已达标」');
+  // 停止按钮：灰色外观但可点
   const stopBtn = findNode(tree, (n) => n.type === 'button'
     && typeof n.props?.className === 'string'
-    && n.props.className.includes('wr-btn-stop'));
-  assert.ok(stopBtn, '应渲染 wr-btn-stop 停止按钮');
-  // 没有 disabled 属性 = 可点；显式 false 也算可点。不能直接 strictEqual(false)。
+    && n.props.className.includes('wr-btn-run')
+    && flattenText(n).includes('停止打卡'));
+  assert.ok(stopBtn, '应渲染「停止打卡」按钮（wr-btn-run）');
   assert.notStrictEqual(stopBtn.props.disabled, true, '停止按钮必须可点');
   assert.ok(typeof stopBtn.props.onClick === 'function', '停止按钮应绑定 onClick');
-  // 达标时运行中的按钮仍应保留绿色（wr-btn-done），不能被运行时样式抹掉
-  const doneLive = findNode(tree, (n) => n.type === 'button'
-    && typeof n.props?.className === 'string'
-    && n.props.className.includes('wr-btn-live'));
-  assert.ok(doneLive, '达标且运行时按钮应保留绿色状态（wr-btn-done + wr-btn-live）');
-  assert.ok(doneLive.props.className.includes('wr-btn-done'), '已达标时不应丢掉 wr-btn-done');
 
   // 点停止 → 请求 /stop
   requested.length = 0;
@@ -603,16 +608,17 @@ function collectTitleAttrs(node, acc = []) {
     todaySec: 1230, phase: 'reporting', unlimited: true, targetMinutes: 0,
   };
   await settle(panelComp, {}, 4);
-  const txt = flattenText(renderTree(panelComp));
-  assert.ok(
-    txt.includes('停止打卡'),
-    'dashboard 丢 progress 时仍应按 status 显示「停止打卡」，实际: ' + txt.slice(0, 140),
-  );
-  const stopBtn = findNode(renderTree(panelComp), (n) => n.type === 'button'
+  const tree12 = renderTree(panelComp);
+  // 断言用按钮节点而不是整页文本：整页会带上其他卡片的字，容易误判
+  const stopBtn = findNode(tree12, (n) => n.type === 'button'
     && typeof n.props?.className === 'string'
-    && n.props.className.includes('wr-btn-stop')
+    && n.props.className.includes('wr-btn-run')
     && flattenText(n).includes('停止打卡'));
-  assert.ok(stopBtn, '应仍有可点的停止按钮');
+  assert.ok(
+    stopBtn,
+    'dashboard 丢 progress 时仍应按 status 显示「停止打卡」，实际按钮文案: '
+      + collectAllClasses(tree12).filter((c) => c.includes('wr-btn')).join(' | '),
+  );
   assert.notStrictEqual(stopBtn.props.disabled, true, '停止按钮必须可点');
   dash.progress = originalDash;
   Object.assign(st, originalSt);

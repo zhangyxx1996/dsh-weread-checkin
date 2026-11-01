@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.1.2';
+    const PLUGIN_VERSION = '1.1.3';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -250,22 +250,16 @@ window.__ModuleLoader__.load({
   cursor: pointer;
 }
 .wr-btn-stop:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-3); }
-/* 已达标的绿色按钮在「运行中」也要保持绿色，只换成描边 + 呼吸，别把状态抹掉 */
-.wr-btn-live,
-.wr-btn-live:disabled {
-  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 18%, transparent);
-  color: var(--dsw-alias-state-success-primary);
-  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 55%, transparent);
-  opacity: 1; cursor: pointer;
-  animation: wr-breathe 1.8s ease-in-out infinite;
+/* 运行中的「继续打卡」按钮：外观是禁用的灰色，但其实是可点的「停止打卡」 */
+.wr-btn-run,
+.wr-btn-run:disabled {
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  border: 1px solid var(--dsw-alias-border-l1);
+  opacity: 1;
+  cursor: pointer !important;   /* 覆盖 .wr-btn-loading 的 not-allowed */
 }
-.wr-btn-live:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 26%, transparent);
-}
-@keyframes wr-breathe {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent); }
-  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--dsw-alias-state-success-primary) 0%, transparent); }
-}
+.wr-btn-run:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-3); }
 .wr-stop-icon {
   width: 9px; height: 9px; flex: none; margin-right: 2px;
   border-radius: 2px; background: currentColor;
@@ -710,21 +704,30 @@ window.__ModuleLoader__.load({
         wasBusyRef.current = busy;
       }, [busy]);
 
+      // 运行中的用时：本次已上报的次数 × 每次 30 秒
+      const runMin = Math.round((done * 30) / 60 * 10) / 10;
+
       let stateText;
-      if (verifying) stateText = '正在用官方接口核对时长…';
-      else if (unlimited) stateText = `持续打卡中 · 已 ${done} 次（约 ${Math.round((done * 30) / 60)} 分钟）`;
-      else if (reporting) stateText = `${done}${total ? `/${total}` : ''} 次上报中`;
-      else if (busy) stateText = '正在上报…';
+      if (verifying) stateText = '正在核对时长…';
+      else if (unlimited) stateText = `已运行 ${runMin} 分钟`;
+      else if (reporting) {
+        stateText = total > 0
+          ? `已运行 ${Math.min(done, total)}/${total} 分钟`
+          : `已运行 ${runMin} 分钟`;
+      } else if (busy) stateText = `已运行 ${runMin} 分钟`;
       else if (reached) stateText = '✓ 已达成今日目标';
       else stateText = `还差 ${remainMin} 分钟达成目标`;
       const stateCls = (reached || verifying) ? 'wr-ok' : ((reporting || busy) ? 'wr-muted' : 'wr-warn');
 
-      // 打卡中按钮必须是「灰色的打卡中」，不能还显示可点的文案
+      // 主按钮文案：运行时只显示用时，不再出现「上报中 / N 次」这类内部细节
       let btnLabel;
       if (verifying) btnLabel = '核对中…';
-      else if (unlimited) btnLabel = `停止打卡 · 已 ${done} 次`;
-      else if (busy) btnLabel = (reporting && total) ? `打卡中 ${done}/${total}` : '打卡中…';
-      else if (reached) btnLabel = `今日已达标 · ${Math.round(goalMinutes)} 分钟`;
+      else if (unlimited) btnLabel = `已运行 ${runMin} 分钟`;
+      else if (busy) {
+        btnLabel = (reporting && total > 0)
+          ? `已运行 ${Math.min(done, total)}/${total} 分钟`
+          : `已运行 ${runMin} 分钟`;
+      } else if (reached) btnLabel = `今日已达标 · ${Math.round(goalMinutes)} 分钟`;
       else btnLabel = `立即打卡 · 补 ${Math.max(0.5, Math.min(data.minutes ?? 10, remainMin || 0.5))} 分钟`;
 
       // 继续打卡：解析用户输入的时长。空 = 不设上限（一直打到手动停止）
@@ -765,43 +768,41 @@ window.__ModuleLoader__.load({
 
           h(Track, { sec: shownSec, goalSec, done: reached }),
 
+          // 主按钮 = 今日状态展示位。达标后固定绿色，运行中也不变，也不可点。
           h('div', { style: { marginTop: '18px' } },
             h('button', {
               type: 'button',
-              // 达标就是达标，运行中也不该把这个绿色状态抹掉。
-              // 运行中额外叠 wr-btn-live（绿色描边 + 轻微呼吸），文案换成停止。
-              className: 'wr-btn'
-                + (reached ? ' wr-btn-done' : '')
-                + (running ? ' wr-btn-live' : ''),
-              disabled: running ? false : (!configured || reached),
-              onClick: running ? onStop : onRun,
+              // 主按钮 = 今日状态展示位。达标后固定绿色，运行中也不变、不可点。
+              className: 'wr-btn' + (reached ? ' wr-btn-done' : '')
+                + (!reached && running ? ' wr-btn-loading' : ''),
+              disabled: reached || running || !configured,
+              onClick: onRun,
             },
-            running ? h('span', { className: 'wr-stop-icon' }) : null,
-            btnLabel)),
+            !reached && running ? h('span', { className: 'wr-spin' }) : null,
+            reached ? `今日已达标 · ${Math.round(goalMinutes)} 分钟` : btnLabel)),
 
-          // 运行中额外给一条整行的醒目「停止」按钮：主按钮在窄屏/长文案下可能被
-          // 挤压，用户反馈过找不到停止入口，所以再给一个不可能错过的入口。
-          running
+          // 「继续打卡 / 停止打卡」：只要达标就常驻；
+          // 运行中无论达没达标都必须出现 —— 停止入口不能依赖「今日是否已达标」，
+          // 否则读数据失败时 reached 未知，用户就没有任何停止办法。
+          (reached || running)
             ? h('div', { style: { marginTop: '10px' } },
-              h('button', {
-                type: 'button',
-                className: 'wr-btn wr-btn-stop' + (reached ? ' wr-btn-live' : ''),
-                onClick: onStop,
-              },
-              h('span', { className: 'wr-stop-icon' }),
-              '停止打卡'))
-            : null,
-
-          // 达标后：补一个「继续打卡」，可以指定时长，也可以一直打
-          reached && !running
-            ? h('div', { style: { marginTop: '10px' } },
-              h('button', {
-                type: 'button',
-                className: 'wr-btn wr-btn-ghost',
-                disabled: !configured,
-                onClick: () => { setAskText(''); setAskOpen(true); },
-              }, '继续打卡'),
-              h('div', { className: 'wr-hint' }, '今天的目标已完成，还可以继续累积时长。'))
+              running
+                ? h('button', {
+                  type: 'button',
+                  className: 'wr-btn wr-btn-loading wr-btn-run',  // 灰色外观，但可点（停止）
+                  onClick: onStop,
+                },
+                h('span', { className: 'wr-stop-icon' }),
+                `停止打卡 · 已运行 ${runMin} 分钟`)
+                : h('button', {
+                  type: 'button',
+                  className: 'wr-btn wr-btn-ghost',
+                  disabled: !configured,
+                  onClick: () => { setAskText(''); setAskOpen(true); },
+                }, '继续打卡'),
+              (running || !reached)
+                ? null
+                : h('div', { className: 'wr-hint' }, '今天的目标已完成，还可以继续累积时长。'))
             : null,
 
           askOpen
