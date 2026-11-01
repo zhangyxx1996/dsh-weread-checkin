@@ -1,4 +1,4 @@
-# 发版脚本（PowerShell）
+﻿# 发版脚本（PowerShell）
 #
 # 用途：一条命令完成「校验 → 提交 → 打 tag → 推送 → 建 GitHub Release」。
 # 用法：
@@ -76,6 +76,53 @@ Write-Host "=== 5/6 推送到 GitHub ===" -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { throw '推送失败' }
 
 Write-Host "=== 6/6 装机 ===" -ForegroundColor Cyan
-Write-Host "  请回到 DSH 对话里说「装一下新版本」，或用 plugin_manager 重新安装。" -ForegroundColor Yellow
+# 装机 = 把本仓库的 link 依赖装进 DSH profile，让 DSH 下次加载时用上新代码。
+# 因为安装方式是 Junction（软链），代码本身已经在目标位置，这一步主要是让 pnpm
+# 确认依赖树一致（改了 package.json 的依赖/版本时需要它），并把 package.json 里的
+# version 同步进 profile 的锁文件。
+$ProfileDir = Join-Path $env:USERPROFILE '.dsh\profiles\desktop'
+$PnpmJs = 'C:\Users\zhang\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pnpm\bin\pnpm.mjs'
+
+if (-not (Test-Path $ProfileDir)) {
+  Write-Host "  找不到 profile 目录，跳过自动装机：$ProfileDir" -ForegroundColor Yellow
+} elseif (-not (Test-Path $PnpmJs)) {
+  Write-Host "  找不到 pnpm，跳过自动装机：$PnpmJs" -ForegroundColor Yellow
+} else {
+  # pnpm 需要 node 在 PATH 上
+  $NodeDir = Split-Path -Parent $Node
+  $env:PATH = "$NodeDir;$env:PATH"
+
+  Push-Location $ProfileDir
+  try {
+    & $Node $PnpmJs install --silent 2>&1 | ForEach-Object { "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "  pnpm install 返回 $LASTEXITCODE，继续（通常不影响 link 安装）" -ForegroundColor Yellow
+    } else {
+      Write-Host "  ✓ 依赖已同步" -ForegroundColor Green
+    }
+  } finally {
+    Pop-Location
+  }
+
+  # 校验软链指向本仓库
+  $linkPath = Join-Path $ProfileDir 'node_modules\dsh-weread-checkin'
+  if (Test-Path $linkPath) {
+    $target = (Get-Item $linkPath).Target
+    $targetText = if ($target -is [array]) { $target[0] } else { $target }
+    if ($targetText -and ($targetText -replace '/', '\').TrimEnd('\') -eq $Repo.TrimEnd('\')) {
+      Write-Host "  ✓ 软链指向本仓库：$targetText" -ForegroundColor Green
+    } else {
+      Write-Host "  软链指向 $targetText（预期 $Repo）" -ForegroundColor Yellow
+    }
+  } else {
+    Write-Host "  没找到 node_modules\dsh-weread-checkin，请在 DSH 里手动安装一次" -ForegroundColor Yellow
+  }
+}
+
+$live = Get-Content (Join-Path $Repo 'package.json') -Raw | ConvertFrom-Json
 Write-Host ""
-Write-Host "完成：v$Version 已发布 https://github.com/zhangyxx1996/dsh-weread-checkin/releases/tag/v$Version" -ForegroundColor Green
+Write-Host "完成：v$Version（package.json 记为 $($live.version)）" -ForegroundColor Green
+Write-Host "GitHub: https://github.com/zhangyxx1996/dsh-weread-checkin/releases/tag/v$Version"
+Write-Host ""
+Write-Host "最后一步：DSH 需要重新加载插件才会用上新代码。" -ForegroundColor Yellow
+Write-Host "  在 DSH 对话里说一句「装一下新版本」即可（我会执行 remove_bundle + install_bundle）。" -ForegroundColor Yellow

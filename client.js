@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.0.1';
+    const PLUGIN_VERSION = '1.0.2';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -100,6 +100,22 @@ window.__ModuleLoader__.load({
   max-width: 1180px; margin: 0 auto; padding: 18px 20px 40px;
 }
 .wr-inner-sm { max-width: 820px; }
+
+/*
+ * 设置页（plugins.bundle.config 槽位）专用：交出滚动权。
+ *
+ * 宿主把这个插件挂在一个 section 里，外面是插件的详情页，真正的滚动容器
+ * 是祖先 .V7pFBG_page（height:100% + overflow:auto）。这里如果沿用 .wr-page
+ * 的 height:100% + overflow-y:auto，高度会解析成"内容有多高就多高"，于是
+ * 自己形成一个永远滚不动的内层盒子，同时把外层的滚动也算成了"已显示"，
+ * 结果上下都滚不了。所以设置页让内容自然撑开，滚动交给宿主。
+ */
+.wr-page-flat {
+  height: auto; min-height: 0; flex: 0 0 auto;
+  overflow: visible;
+  scrollbar-width: auto;
+}
+.wr-page-flat::-webkit-scrollbar { width: auto; height: auto; }
 
 /* 卡片自适应网格：窗口变宽自动多列，变窄自动回落单列 */
 .wr-cards {
@@ -1210,7 +1226,7 @@ window.__ModuleLoader__.load({
       const hasBase = Boolean(status?.hasBase);
       const canVerify = Boolean(status?.canVerify);
 
-      return h('div', { className: 'wr-page' },
+      return h('div', { className: 'wr-page wr-page-flat' },
         h('div', { className: 'wr-inner wr-inner-sm' },
         // 连接状态
         h('div', { className: 'wr-section' },
