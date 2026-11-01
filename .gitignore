@@ -1,0 +1,12 @@
+# 一次性诊断脚本：不进版本
+probe-*.mjs
+_diag.mjs
+
+# 但真正的回归测试要留下
+!probe-client-run.mjs
+!probe-host.mjs
+!probe-layout-fix.mjs
+
+# 依赖与产物
+node_modules/
+*.log

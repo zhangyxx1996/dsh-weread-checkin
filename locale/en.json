@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WeRead Check-in",
+    "description": "Reports reading time to WeChat Reading every 30 seconds to earn the daily check-in. Trigger from the composer panel, the /weread command, a chat request, or an automatic daily schedule."
+  }
+}

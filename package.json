@@ -1,0 +1,39 @@
+{
+  "name": "dsh-weread-checkin",
+  "version": "0.3.3",
+  "description": "微信读书每日打卡插件：按 30 秒一次上报阅读时长完成打卡，支持面板按钮、/weread 命令、对话触发与每天定时自动执行。",
+  "type": "module",
+  "private": true,
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "weread-api.js",
+    "weread-verify.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    },
+    "compatibility": {
+      "dshReleases": {}
+    }
+  }
+}

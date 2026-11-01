@@ -1,0 +1,7 @@
+- insert:
+    - id: dsh-weread-checkin
+      name: dsh-weread-checkin
+      config:
+        minutes: 10
+        goalMinutes: 10
+        autoTime: ""
