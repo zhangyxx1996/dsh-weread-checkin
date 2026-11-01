@@ -12,6 +12,10 @@ _*.mjs
 node_modules/
 *.log
 
+# 开发资料（调研报告 / PPT 生成脚本 / PPT / 接口探测）：
+# 和代码放在一起方便找，但不进版本库
+docs/
+
 # 本机凭据（万一被误放到仓库里）
 weread-credentials.json
 *.token
