@@ -1,8 +1,42 @@
 # 微信读书打卡（dsh-weread-checkin）
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
+
+在 [DeepSeek Harness](https://github.com/deepseek-ai) 里完成微信读书每日打卡：手动一键、每天定时、或让 AI 代劳。
+
 当前版本 **v1.0.1**（版本号会自动显示在插件面板底部与设置页「关于」里）。
 
-在 DeepSeek Harness 里完成微信读书每日打卡：手动一键、每天定时、或让 AI 代劳。
+> **只需要一次 Cookie，不需要抓包。** 上报模板有内置兜底，粘一次 Cookie 就能用。
+
+## 安装
+
+```powershell
+# 1. 克隆到本地
+git clone https://github.com/OWNER/dsh-weread-checkin.git
+
+# 2. 在 DSH 里安装（把路径换成你克隆到的目录）
+#    然后重启 DSH 桌面端
+```
+
+DSH 安装方式二选一：
+
+- **插件市场**：如果本插件已收录，直接在 DSH 的插件市场里搜索「微信读书」安装。
+- **本地安装**：把克隆下来的目录用 `plugin_manager install_bundle` 装进去，然后**重启 DSH**（插件改动必须重启才生效）。
+
+装好后左侧栏会出现一个书本图标，带三色状态点。
+
+## 快速开始
+
+1. 点左侧栏的书本图标 → 面板右下角「设置」
+2. 浏览器打开 [weread.qq.com](https://weread.qq.com) 并确认已登录
+3. `F12` → Network → 过滤 `read` → 随便翻一页书，出现 `/web/book/read` 请求
+4. 右键那条请求 → Copy → **Copy as cURL (bash)**
+5. 整段粘进插件设置页的 Cookie 框 → 保存
+
+就这么两步。Cookie 保存在本机 `~/.dsh/weread-credentials.json`，不会写进插件配置、也不会传给任何第三方。
+
+**wr_skey 约 90 分钟过期**，插件会自动续期；整体登录态约 30 天，届时重新粘一次即可。
 
 ## 原理
 

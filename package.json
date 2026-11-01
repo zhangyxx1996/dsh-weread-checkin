@@ -4,6 +4,25 @@
   "description": "微信读书每日打卡插件：按 30 秒一次上报阅读时长完成打卡，支持面板按钮、/weread 命令、对话触发与每天定时自动执行。",
   "type": "module",
   "private": true,
+  "license": "MIT",
+  "author": "dsh-weread-checkin contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhangyxx1996/dsh-weread-checkin.git"
+  },
+  "homepage": "https://github.com/zhangyxx1996/dsh-weread-checkin#readme",
+  "bugs": {
+    "url": "https://github.com/zhangyxx1996/dsh-weread-checkin/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "weread",
+    "微信读书",
+    "打卡",
+    "reading"
+  ],
   "main": "index.js",
   "exports": {
     ".": "./index.js",

@@ -1,6 +1,7 @@
 # 一次性诊断脚本：不进版本
 probe-*.mjs
 _diag.mjs
+_*.mjs
 
 # 但真正的回归测试要留下
 !probe-client-run.mjs
@@ -10,3 +11,7 @@ _diag.mjs
 # 依赖与产物
 node_modules/
 *.log
+
+# 本机凭据（万一被误放到仓库里）
+weread-credentials.json
+*.token
