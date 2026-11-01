@@ -538,7 +538,11 @@ export function apply(ctx, config = {}) {
       minutes: minutesNow(),
       goalMinutes: goalNow(),
       autoTime: autoTimeNow(),
-      today,
+      // 注意字段名：不能叫 today —— 前端会把 status 的返回值合并进 dashboard 数据
+      // （client.js 的 `{ ...data, ...runtime }`），而 dashboard 的 today 是
+      // { sec, goalSec, ... } 对象。同名会让日期字符串把对象整个覆盖掉，
+      // TodayCard 读 t.sec 得到 undefined → 今日时长变 0 → 已达标按钮退回普通按钮并转圈。
+      todayYmd: today,
       lastDayDone: state.lastDay === today && state.lastDone > 0,
       lastFail: state.lastFail || '',
       // 版本号（前端底部展示，来自 package.json，避免两处硬编码打架）

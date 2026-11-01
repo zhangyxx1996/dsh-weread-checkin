@@ -208,7 +208,21 @@ export async function refreshSkey(cookies) {
   return null;
 }
 
-const AUTH_PROBE_URL = 'https://weread.qq.com/web/shelf/sync';
+/**
+ * 登录态探测专用接口：会话续期。
+ *
+ * 为什么不用书架/阅读接口：2026-11 实测，`/web/shelf/sync`、`/web/book/readinfo`、
+ * `/web/book/underlines` 对「有效 Cookie」和「把 wr_skey 改坏的 Cookie」返回**完全相同**
+ * 的 `errCode:-2012 登录超时`，只有完全不带 Cookie 时才变成 -2010。也就是说这些接口
+ * 根本区分不出登录态好坏，拿它当判据会让徽标长期误报红点（用户明明能正常打卡）。
+ *
+ * 只有 `/web/login/renewal` 有区分力：
+ *   有 Cookie（无论 wr_skey 新旧）→ `{"succ":1}` 且下发新的 wr_skey
+ *   无 Cookie                      → `{"errCode":-2013,"errMsg":"params error (node)"}`，无 Set-Cookie
+ * 顺带说明：wr_skey 本身不承担主要认证作用，改坏了照样能续期 —— 真正管用的是
+ * wr_vid / wr_rt 这些长期凭据。所以判断失效不能只看 wr_skey 的值。
+ */
+const AUTH_PROBE_URL = RENEW_URL;
 
 /**
  * 用 Cookie 探一次登录态，判断这个 Cookie 还能不能上报。
@@ -216,7 +230,7 @@ const AUTH_PROBE_URL = 'https://weread.qq.com/web/shelf/sync';
  * 为什么需要单独探：徽标读的是官方 API Key 那条通道（/readdata/detail），
  * 它和 Cookie 完全独立 —— Cookie 过期了它照样返回漂亮的阅读统计，
  * 于是侧边栏会一直显示黄/绿，直到用户真去打卡才发现早就失效了。
- * 这里用一个最轻的、必须带 Cookie 的接口把「登录态」单独测出来。
+ * 这里用会话续期接口把「登录态」单独测出来。
  *
  * @returns {Promise<{ok:boolean, reason:string, hard:boolean}>} hard=true 表示凭据失效（该显示红点）
  */
@@ -226,14 +240,16 @@ export async function probeAuth(cookies) {
   const timer = setTimeout(() => controller.abort(), RENEW_TIMEOUT_MS);
   try {
     const res = await fetch(AUTH_PROBE_URL, {
-      method: 'GET',
+      method: 'POST',
       headers: {
+        'content-type': 'application/json;charset=UTF-8',
         accept: 'application/json, text/plain, */*',
         origin: 'https://weread.qq.com',
-        referer: 'https://weread.qq.com/web/shelf',
+        referer: 'https://weread.qq.com/web/reader/',
         'user-agent': UA,
         cookie: cookieHeader(cookies),
       },
+      body: JSON.stringify({ rq: '%2Fweb%2Fbook%2Fread', ql: false }),
       signal: controller.signal,
     });
     const text = await res.text();
@@ -243,18 +259,18 @@ export async function probeAuth(cookies) {
     } catch {
       json = null;
     }
+    // 续期成功会直接下发新 wr_skey，这是最硬的「还活着」证据
+    const skey = extractSkey(res);
     const code = json?.errcode ?? json?.errCode;
-    if (AUTH_ERROR_CODES.has(code) || res.status === 401) {
+    if (code === -2010 || code === -2013 || res.status === 401) {
       return { ok: false, reason: 'Cookie 已失效，需要重新粘贴', hard: true };
     }
+    if (skey || json?.succ === 1) return { ok: true, reason: '', hard: false };
     if (res.status !== 200 || json === null) {
       return { ok: false, reason: `登录态探测失败（HTTP ${res.status}）`, hard: false };
     }
-    // 有效登录态才会给书架数据；给了空对象说明被踢下线了
-    if (json.bookCount === undefined && json.books === undefined && Object.keys(json).length === 0) {
-      return { ok: false, reason: 'Cookie 已失效，需要重新粘贴', hard: true };
-    }
-    return { ok: true, reason: '', hard: false };
+    // 走到这里说明接口回了、但没有续期凭证：判为失效
+    return { ok: false, reason: 'Cookie 已失效，需要重新粘贴', hard: true };
   } catch (err) {
     return { ok: false, reason: `登录态探测失败：${err?.message ?? err}`, hard: false };
   } finally {

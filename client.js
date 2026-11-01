@@ -697,7 +697,11 @@ window.__ModuleLoader__.load({
 
     /** 今日打卡卡片：进度按「每日目标」算，打卡中按钮变灰不可点。 */
     function TodayCard({ data, busy, onRun, onContinue, onStop }) {
-      const t = data.today ?? {};
+      // 防御：today 必须是 dashboard 给的对象。若被别的接口（比如 status 的日期
+      // 字符串）同名覆盖，`t.sec` 会变成 undefined → sec 归零 → 已达标的绿色按钮
+      // 会退回普通按钮并在打卡时转圈。非对象一律当作「没有数据」处理，
+      // 交给下面的 progress 实时进度兜底。
+      const t = (data.today && typeof data.today === 'object') ? data.today : {};
       const sec = t.sec ?? 0;
       const goalMinutes = data.goalMinutes ?? 10;
       const goalSec = Math.round(goalMinutes * 60);
@@ -1446,7 +1450,14 @@ window.__ModuleLoader__.load({
       const configured = data.configured !== false;
       // 运行状态以 runtime（来自 status）为准，dashboard 只是补充。
       // data 可能因为读远端失败而缺 progress，runtime 不会。
-      const view = runtime ? { ...data, ...runtime } : data;
+      //
+      // 但 today 必须排除在外：status() 里的 today 是「今天」这个日期字符串
+      // （用于 lastDayDone 判定），而 dashboard 的 today 是 { date, sec, min,
+      // reached, threshold } 对象。直接 `{ ...data, ...runtime }` 会让字符串把对象
+      // 整个覆盖，TodayCard 读 t.sec 得到 undefined → 今日时长归零 → 已达标的
+      // 绿色按钮退回普通按钮、打卡时还会转圈。所以这里把 today 从 runtime 里剔掉。
+      const { today: _runtimeToday, ...runtimeSafe } = runtime ?? {};
+      const view = runtime ? { ...data, ...runtimeSafe } : data;
       return h('div', { className: 'wr-page' },
         h('div', { className: 'wr-inner' },
           h(Notice, { notice }),
