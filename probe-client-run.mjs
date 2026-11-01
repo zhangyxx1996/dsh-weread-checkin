@@ -286,7 +286,8 @@ txt = render(panelComp);
 console.log('✓ Panel 有数据帧文本 →', txt.replace(/\s+/g, ' ').slice(0, 260));
 assert.ok(txt.includes('20.5'), '应显示今日 20.5 分钟');
 assert.ok(txt.includes('已达标'), '今日已达标应显示');
-assert.ok(txt.includes('绍宋'), '本周最多应显示书名');
+// v1.1.5：日历周视图不再展示「读得最多」，假数据里的 topBooks 不应出现在文本里
+assert.ok(!txt.includes('读得最多'), '打卡日历不应再有「读得最多」区块');
 assert.ok(txt.includes('每天 08:30'), '应显示自动打卡时间');
 assert.ok(txt.includes('558'), '应显示累计阅读天数');
 
@@ -428,9 +429,9 @@ function collectTitleAttrs(node, acc = []) {
   console.log('✓ 日历月视图 → 请求 history，绿/红达标色齐备，格子数', cells.length);
 }
 
-// 8) 书架：默认展开并预取，展示封面网格（默认裁到两排）
+// 8) 书架：常驻展示并预取，封面网格（默认裁到两排）
 {
-  assert.ok(requested.some((u) => u.endsWith('/shelf')), '书架默认展开，进界面就该请求 shelf');
+  assert.ok(requested.some((u) => u.endsWith('/shelf')), '书架常驻显示，进界面就该请求 shelf');
   const tree3 = renderTree(panelComp);
   const t3 = flattenText(tree3);
   // 封面网格里书名只放在 title 属性上，靠 hover 显示
@@ -462,7 +463,7 @@ function collectTitleAttrs(node, acc = []) {
       '点「全部」后应解除两排裁切',
     );
   }
-  console.log('✓ 书架默认展开 → 封面网格 + 两排裁切', hasAllBtn ? '+ 全部展开' : '(假数据 <8 本)');
+  console.log('✓ 书架常驻显示 → 封面网格 + 两排裁切', hasAllBtn ? '+ 全部展开' : '(假数据 <8 本)');
 }
 
 // 9) 周视图默认从周一开头

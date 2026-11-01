@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.1.4';
+    const PLUGIN_VERSION = '1.1.5';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -1067,18 +1067,7 @@ window.__ModuleLoader__.load({
             h('div', { className: 'wr-legend' },
               h('span', { className: 'wr-legend-sq wr-cal-ok-2' }), h('span', null, '达标'),
               h('span', { className: 'wr-legend-sq wr-cal-red-1' }), h('span', null, '未达标'),
-              h('span', { className: 'wr-legend-sq wr-cal-red-0' }), h('span', null, '未读')),
-            data.week?.topBooks?.length
-              ? h('div', { style: { marginTop: '16px' } },
-                h('div', { className: 'wr-muted', style: { marginBottom: '2px' } }, '读得最多'),
-                data.week.topBooks.map((b) => h('div', { className: 'wr-book', key: b.title },
-                  b.cover ? h('img', { className: 'wr-book-cover', src: b.cover, alt: '' })
-                    : h('div', { className: 'wr-book-cover' }),
-                  h('div', { className: 'wr-book-main' },
-                    h('div', { className: 'wr-book-title' }, b.title),
-                    h('div', { className: 'wr-book-sub' }, b.author || '—')),
-                  h('span', { className: 'wr-book-time' }, fmtDuration(b.sec)))))
-              : null),
+              h('span', { className: 'wr-legend-sq wr-cal-red-0' }), h('span', null, '未读'))),
         );
       }
 
@@ -1142,9 +1131,8 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** 书架：默认展开并展示封面网格，其余明细点开时再请求。 */
-    function ShelfCard({ configured }) {
-      const [open, setOpen] = React.useState(true);
+    /** 书架：展示封面网格，进界面就请求一次，之后走本地缓存。 */
+    function ShelfCard() {
       const [data, setData] = React.useState(null);
       const [loading, setLoading] = React.useState(false);
       const [error, setError] = React.useState('');
@@ -1162,12 +1150,10 @@ window.__ModuleLoader__.load({
           .finally(() => setLoading(false));
       }, []);
 
-      const toggle = () => setOpen(!open);
-
-      // 展开时才拉一次，之后用本地缓存
+      // 进界面拉一次，之后用本地缓存
       React.useEffect(() => {
-        if (open && data === null && !loading && !error) load();
-      }, [open, data, loading, error, load]);
+        if (data === null && !loading && !error) load();
+      }, [data, loading, error, load]);
 
       const books = data?.books ?? [];
       const sorted = [...books].sort((a, b) => (b.yearSec ?? -1) - (a.yearSec ?? -1));
@@ -1188,52 +1174,45 @@ window.__ModuleLoader__.load({
                 type: 'button', className: 'wr-btn-ghost wr-btn-sm',
                 onClick: () => setShowAll(!showAll),
               }, showAll ? '收起' : `全部 ${sorted.length} 本`)
-              : null,
-            h('button', {
-              type: 'button', className: 'wr-btn-ghost wr-btn-sm',
-              disabled: !configured,
-              onClick: toggle,
-            }, open ? '收起' : '展开'))),
-        open
-          ? h('div', { className: 'wr-group wr-group-pad' },
-            loading ? h('div', { className: 'wr-empty' }, '正在读取书架…')
-              : error ? h('div', { className: 'wr-empty wr-err' }, error)
-                : !data ? h('div', { className: 'wr-empty' }, '暂无数据')
-                  : h('div', null,
-                    h('div', {
-                      style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '10px' },
-                    },
-                    h('div', null,
-                      h('span', { style: { fontSize: '20px', fontWeight: 700, letterSpacing: '-.5px' } },
-                        `${data.total ?? 0}`),
-                      h('span', { className: 'wr-muted' }, ' 本')),
-                    h('div', { className: 'wr-muted', style: { textAlign: 'right' } },
-                      `今年 ${fmtDuration(data.yearTotalSec ?? 0)}`,
-                      h('div', { className: 'wr-muted', style: { fontSize: '10.5px' } },
-                        `时长覆盖 ${data.coveredCount ?? 0}/${data.bookCount ?? 0} 本`))),
-                    h('div', {
-                      className: gridCls,
-                      style: { maxHeight: showAll ? 'none' : `${COVER_H * 2 + 10}px` },
-                    },
-                    sorted.map((b) => h('div', {
-                      className: 'wr-cover-tile', key: b.bookId, title: b.title,
-                    },
-                    b.cover
-                      ? h('img', {
-                        className: 'wr-cover', src: b.cover, alt: b.title,
-                        style: { height: `${COVER_H}px` },
-                      })
-                      : h('div', {
-                        className: 'wr-cover wr-cover-none',
-                        style: { height: `${COVER_H}px` },
-                      }, BookGlyph(18)),
-                    h('div', { className: 'wr-cover-time' },
-                      b.yearSec === null
-                        ? h('span', { className: 'wr-muted' }, '—')
-                        : fmtDuration(b.yearSec))))),
-                    h('div', { className: 'wr-hint', style: { marginTop: '10px', marginBottom: 0 } },
-                      '每本书的时长来自官方统计的「读得最多」榜，只有进榜的书才有数字。')))
-          : null,
+              : null)),
+        h('div', { className: 'wr-group wr-group-pad' },
+          loading ? h('div', { className: 'wr-empty' }, '正在读取书架…')
+            : error ? h('div', { className: 'wr-empty wr-err' }, error)
+              : !data ? h('div', { className: 'wr-empty' }, '暂无数据')
+                : h('div', null,
+                  h('div', {
+                    style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '10px' },
+                  },
+                  h('div', null,
+                    h('span', { style: { fontSize: '20px', fontWeight: 700, letterSpacing: '-.5px' } },
+                      `${data.total ?? 0}`),
+                    h('span', { className: 'wr-muted' }, ' 本')),
+                  h('div', { className: 'wr-muted', style: { textAlign: 'right' } },
+                    `今年 ${fmtDuration(data.yearTotalSec ?? 0)}`,
+                    h('div', { className: 'wr-muted', style: { fontSize: '10.5px' } },
+                      `时长覆盖 ${data.coveredCount ?? 0}/${data.bookCount ?? 0} 本`))),
+                  h('div', {
+                    className: gridCls,
+                    style: { maxHeight: showAll ? 'none' : `${COVER_H * 2 + 10}px` },
+                  },
+                  sorted.map((b) => h('div', {
+                    className: 'wr-cover-tile', key: b.bookId, title: b.title,
+                  },
+                  b.cover
+                    ? h('img', {
+                      className: 'wr-cover', src: b.cover, alt: b.title,
+                      style: { height: `${COVER_H}px` },
+                    })
+                    : h('div', {
+                      className: 'wr-cover wr-cover-none',
+                      style: { height: `${COVER_H}px` },
+                    }, BookGlyph(18)),
+                  h('div', { className: 'wr-cover-time' },
+                    b.yearSec === null
+                      ? h('span', { className: 'wr-muted' }, '—')
+                      : fmtDuration(b.yearSec))))),
+                  h('div', { className: 'wr-hint', style: { marginTop: '10px', marginBottom: 0 } },
+                    '每本书的时长来自官方统计的「读得最多」榜，只有进榜的书才有数字。'))),
       );
     }
 
@@ -1447,7 +1426,6 @@ window.__ModuleLoader__.load({
                 }, '重试')))));
       }
 
-      const configured = data.configured !== false;
       // 运行状态以 runtime（来自 status）为准，dashboard 只是补充。
       // data 可能因为读远端失败而缺 progress，runtime 不会。
       //
@@ -1467,7 +1445,7 @@ window.__ModuleLoader__.load({
             })),
             h('div', { className: 'wr-cell' }, h(GoalCard, { data, busy, onGoal: setGoal, onMinutes: setMinutes, onAuto: setAuto })),
             h('div', { className: 'wr-cell wr-cell-wide' }, h(CalendarCard, { data })),
-            h('div', { className: 'wr-cell' }, h(ShelfCard, { configured })),
+            h('div', { className: 'wr-cell' }, h(ShelfCard)),
             h('div', { className: 'wr-cell' }, h(OverallCard, { overall: data.overall })),
           ),
           h('div', { className: 'wr-version' }, `微信读书打卡 v${data.version || PLUGIN_VERSION}`)));
