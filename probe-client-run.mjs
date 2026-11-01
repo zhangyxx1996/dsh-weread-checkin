@@ -46,6 +46,7 @@ const responses = {
     ok: true, configured: true, hasCookie: true, hasBase: true, baseFromBuiltin: true,
     canVerify: true, running: false, lastRunAt: 0, lastDay: '2026-10-31', lastDone: 20, lastErrors: [],
     minutes: 10, goalMinutes: 20, autoTime: '08:30', today: '2026-10-31', lastDayDone: true, lastFail: '',
+    version: JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version,
   },
   // v0.2.0 侧边栏三色点：没这个假响应时 SidebarIcon 会走 catch 一律变红
   badge: { ok: true, level: 'green', reason: '', todaySec: 1230, goalMinutes: 20, readDays: 558 },
@@ -257,6 +258,18 @@ console.log('✓ Settings 文本 →', st.replace(/\s+/g, ' ').slice(0, 200));
 assert.ok(st.includes('已配置'), '应显示 Cookie 已配置');
 assert.ok(st.includes('可核对时长'), '应显示可核对时长');
 assert.ok(st.includes('内置模板'), '应显示内置模板');
+
+// 4b) 设置页必须展示版本号，且与 package.json 一致
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+assert.ok(st.includes('关于'), '设置页应有「关于」分组');
+assert.ok(st.includes('v' + pkg.version), `设置页应显示 v${pkg.version}，实际未见`);
+assert.ok(st.includes('dsh-weread-checkin'), '设置页应显示包名');
+console.log('✓ 设置页版本号 → v' + pkg.version);
+
+// 4c) 面板底部也要有版本号
+assert.ok(txt.includes('微信读书打卡'), '面板底部应有插件名');
+assert.ok(txt.includes('v' + pkg.version), `面板底部应显示 v${pkg.version}`);
+console.log('✓ 面板底部版本号 → v' + pkg.version);
 
 // 5) v0.2.0 新增：时长档位与徽标接口都要真的被请求过
 for (const m of ['dashboard', 'badge', 'status']) {

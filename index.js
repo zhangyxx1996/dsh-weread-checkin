@@ -75,7 +75,28 @@ export function parseCurl(curl) {
 
 export const name = 'dsh-weread-checkin';
 
+/**
+ * 插件版本号：从 package.json 读，单一来源。
+ *
+ * 必要性：界面要展示版本号，如果 client.js 里再硬编码一份，改版本时容易
+ * 只改一处、两边对不上。这里读 package.json 后经 status 下发给前端。
+ */
+async function readVersion() {
+  try {
+    const url = new URL('./package.json', import.meta.url);
+    const raw = await readFile(url, 'utf8');
+    const pkg = JSON.parse(raw);
+    return typeof pkg.version === 'string' ? pkg.version : '';
+  } catch {
+    return '';
+  }
+}
+
 export function apply(ctx, config = {}) {
+  /** 版本号只读一次即可（装机后不会变）。 */
+  let pluginVersion = '';
+  readVersion().then((v) => { pluginVersion = v; });
+
   /**
    * 数据目录候选：先 profile 目录，再 DSH_HOME 根。
    *
@@ -477,6 +498,8 @@ export function apply(ctx, config = {}) {
       today,
       lastDayDone: state.lastDay === today && state.lastDone > 0,
       lastFail: state.lastFail || '',
+      // 版本号（前端底部展示，来自 package.json，避免两处硬编码打架）
+      version: pluginVersion,
       // 打卡进行中的实时进度（界面每 30 秒轮询一次）
       progress: { ...progress },
     };
@@ -522,6 +545,7 @@ export function apply(ctx, config = {}) {
       goalMinutes: goalNow(),
       autoTime: autoTimeNow(),
       lastFail: state.lastFail || '',
+      version: pluginVersion,
       progress: { ...progress },
     };
   }

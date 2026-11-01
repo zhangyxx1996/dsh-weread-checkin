@@ -21,6 +21,11 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
 
     const PANEL_ID = 'dsh-weread-checkin';
+    /**
+     * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
+     * package.json），这里只在接口没返回时兜底，避免界面出现空白。
+     */
+    const PLUGIN_VERSION = '1.0.1';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -127,6 +132,12 @@ window.__ModuleLoader__.load({
 .wr-row + .wr-row { border-top: 1px solid var(--dsw-alias-border-l1); }
 .wr-row-label { font-size: 13.5px; }
 .wr-row-value { font-size: 13px; color: var(--dsw-alias-label-secondary); }
+/* 面板底部的版本行 */
+.wr-version {
+  margin-top: 18px; text-align: center;
+  font-size: 10.5px; letter-spacing: .2px;
+  color: var(--dsw-alias-label-secondary); opacity: .75;
+}
 
 .wr-muted { color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .wr-ok { color: var(--dsw-alias-state-success-primary); }
@@ -1147,7 +1158,8 @@ window.__ModuleLoader__.load({
             h('div', { className: 'wr-cell wr-cell-wide' }, h(CalendarCard, { data })),
             h('div', { className: 'wr-cell' }, h(ShelfCard, { configured })),
             h('div', { className: 'wr-cell' }, h(OverallCard, { overall: data.overall })),
-          )));
+          ),
+          h('div', { className: 'wr-version' }, `微信读书打卡 v${data.version || PLUGIN_VERSION}`)));
     }
 
     /** 设置页。 */
@@ -1282,8 +1294,19 @@ window.__ModuleLoader__.load({
               '只需要 Cookie。上报用的书籍标识与设备字段由插件内置的实测模板提供，'
               + '服务端不逐字段校验，只要组合曾真实产生过就能通过。凭据保存在本机，不写进插件配置。'),
             h('div', { className: 'wr-hint' },
-              'wr_skey 约 90 分钟过期，插件会自动续期；整体登录态约 30 天，届时需重新粘贴一次。')))),
-      );
+              'wr_skey 约 90 分钟过期，插件会自动续期；整体登录态约 30 天，届时需重新粘贴一次。'))),
+
+        // 版本
+        h('div', { className: 'wr-section' },
+          h('div', { className: 'wr-section-title' }, h('span', null, '关于')),
+          h('div', { className: 'wr-group' },
+            h('div', { className: 'wr-row' },
+              h('span', { className: 'wr-row-label' }, '版本'),
+              h('span', { className: 'wr-row-value' }, `v${status?.version || PLUGIN_VERSION}`)),
+            h('div', { className: 'wr-row' },
+              h('span', { className: 'wr-row-label' }, '包名'),
+              h('span', { className: 'wr-row-value' }, PANEL_ID)))),
+        ));
     }
 
     // 样式在 factory 内就地注入：模块系统在 materialization 时靠「新增的未打标
