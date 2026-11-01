@@ -6,7 +6,7 @@
 ## 一条命令发版
 
 ```powershell
-cd D:\DSH工作区\dsh-weread-checkin
+cd D:\DSH工作区\微信读书插件
 .\release.ps1 -Version 1.0.2 -Note "修了什么"
 ```
 
@@ -17,7 +17,8 @@ cd D:\DSH工作区\dsh-weread-checkin
 ## 为什么
 
 插件是 `link:` 安装（`profiles/desktop/node_modules/dsh-weread-checkin` 是 Junction，
-直指本目录），`remove_bundle` + `install_bundle` 只换软链、不留副本；
+直指本目录 —— **包名仍是 `dsh-weread-checkin`，只有源码目录改名成了「微信读书插件」**），
+`remove_bundle` + `install_bundle` 只换软链、不留副本；
 `.plugin-manager/logs/` 里只有 pnpm 安装日志，没有代码快照。
 
 所以**没有 git 就没有历史**：开发期的 0.1.0 → 0.3.2 全部版本的代码已经因为直接覆盖而丢失。
@@ -33,6 +34,10 @@ cd D:\DSH工作区\dsh-weread-checkin
 
 ```powershell
 $git = 'C:\Users\zhang\.workbuddy\vendor\PortableGit\cmd\git.exe'
+$node = 'C:\Users\zhang\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe'
+
+# 0. 先进到仓库目录（所有命令都相对于它）
+cd D:\DSH工作区\微信读书插件
 
 # 1. 改完代码、跑完回归测试
 & $node --check client.js
@@ -79,9 +84,16 @@ $git = 'C:\Users\zhang\.workbuddy\vendor\PortableGit\cmd\git.exe'
 
 ## 注意
 
+- **源码目录名 ≠ 包名**：目录是 `D:\DSH工作区\微信读书插件`（2026-11-01 从
+  `D:\DSH工作区\dsh-weread-checkin` 迁来），包名仍是 `dsh-weread-checkin`。
+  `package.json` / `cordis.patch.yml` / `client.js` / `index.js` / `release.ps1`
+  里的 `dsh-weread-checkin` 是**包标识、Junction 名和 GitHub 仓库名**，改目录时不能跟着改。
 - 仓库身份是仓库内局部配置（`DSH Agent <agent@dsh.local>`），没有改全局 git 配置。
 - `core.autocrlf = false`，避免 Windows 换行符污染 diff。
-- 推送凭据用本仓库的 `url.insteadOf`（含 token），**只在本仓库生效**，
-  不会出现在 `git remote -v` 里，也不会被提交进版本。
+- 推送凭据用本仓库的 `url.insteadOf`（含 token），**只在本仓库生效**。
+  注意它不影响 `git remote -v` 的显示：远端 URL 里本来就带 token，
+  用 `git remote -v` 排查时别把 token 贴到公开地方。
 - 本机 git 走 schannel 会报 `SEC_E_NO_CREDENTIALS`，所以本仓库固定了
   `http.sslBackend=openssl` + `http.sslVerify=false`（本机证书链不全导致的，不影响安全边界）。
+- 回归脚本 `probe-client-run.mjs` 已改为按自身文件位置读 `client.js`，
+  **换目录后不用再改路径**；其它 `probe-*.mjs` 若再出现写死的 `D:\DSH工作区\...` 路径，同样改成相对定位。

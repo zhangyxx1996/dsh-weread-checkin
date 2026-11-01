@@ -7,9 +7,14 @@
  */
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert';
 
-const src = await readFile('D:/DSH工作区/dsh-weread-checkin/client.js', 'utf8');
+// 按本文件所在目录定位 client.js，避免写死仓库绝对路径（仓库 2026-11-01 从
+// dsh-weread-checkin 迁到「微信读书插件」，写死路径会直接读不到文件）
+const here = dirname(fileURLToPath(import.meta.url));
+const src = await readFile(join(here, 'client.js'), 'utf8');
 
 // ---------- 假 React（每组件独立 hook 槽位，可多次渲染） ----------
 const stores = new Map(); // comp -> {state:[], effects:[], pending:[], cursor:0}

@@ -12,8 +12,8 @@
 ## 安装
 
 ```powershell
-# 1. 克隆到本地
-git clone https://github.com/OWNER/dsh-weread-checkin.git
+# 1. 克隆到本地（目录名随意，本机用的是 D:\DSH工作区\微信读书插件）
+git clone https://github.com/zhangyxx1996/dsh-weread-checkin.git
 
 # 2. 在 DSH 里安装（把路径换成你克隆到的目录）
 #    然后重启 DSH 桌面端
