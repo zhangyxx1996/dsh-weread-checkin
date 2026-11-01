@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.1.1';
+    const PLUGIN_VERSION = '1.1.2';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -250,6 +250,22 @@ window.__ModuleLoader__.load({
   cursor: pointer;
 }
 .wr-btn-stop:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-3); }
+/* 已达标的绿色按钮在「运行中」也要保持绿色，只换成描边 + 呼吸，别把状态抹掉 */
+.wr-btn-live,
+.wr-btn-live:disabled {
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 18%, transparent);
+  color: var(--dsw-alias-state-success-primary);
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 55%, transparent);
+  opacity: 1; cursor: pointer;
+  animation: wr-breathe 1.8s ease-in-out infinite;
+}
+.wr-btn-live:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 26%, transparent);
+}
+@keyframes wr-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--dsw-alias-state-success-primary) 0%, transparent); }
+}
 .wr-stop-icon {
   width: 9px; height: 9px; flex: none; margin-right: 2px;
   border-radius: 2px; background: currentColor;
@@ -752,10 +768,11 @@ window.__ModuleLoader__.load({
           h('div', { style: { marginTop: '18px' } },
             h('button', {
               type: 'button',
-              // 运行中：按钮就是「停止」，始终可点。其余状态是「立即打卡」/「已达标」。
+              // 达标就是达标，运行中也不该把这个绿色状态抹掉。
+              // 运行中额外叠 wr-btn-live（绿色描边 + 轻微呼吸），文案换成停止。
               className: 'wr-btn'
-                + (running ? ' wr-btn-stop' : '')
-                + (!running && reached ? ' wr-btn-done' : ''),
+                + (reached ? ' wr-btn-done' : '')
+                + (running ? ' wr-btn-live' : ''),
               disabled: running ? false : (!configured || reached),
               onClick: running ? onStop : onRun,
             },
@@ -768,7 +785,7 @@ window.__ModuleLoader__.load({
             ? h('div', { style: { marginTop: '10px' } },
               h('button', {
                 type: 'button',
-                className: 'wr-btn wr-btn-stop',
+                className: 'wr-btn wr-btn-stop' + (reached ? ' wr-btn-live' : ''),
                 onClick: onStop,
               },
               h('span', { className: 'wr-stop-icon' }),
@@ -1237,11 +1254,20 @@ window.__ModuleLoader__.load({
         refreshRuntime();
         return call('dashboard')
           .then((d) => {
+            if (d && d.ok === false && d.today == null) {
+              // 读数据失败时不要把界面清空：保留上一次的今日数据，只提示错误。
+              // 否则用户会看到「今日 0 分钟」，以为打卡被吞了。
+              setData((prev) => (prev ? { ...prev, lastError: d.reason || '' } : d));
+              return;
+            }
             setData(d);
             // dashboard 成功时也带运行状态，一并采纳（比 status 多一次刷新价值）
             if (d && d.progress) setRuntime(d);
           })
-          .catch((e) => setData({ ok: false, reason: String(e?.message ?? e) }));
+          .catch((e) => {
+            // 请求本身失败也一样：保住旧数据，不把今日时长打成 0
+            setData((prev) => (prev ? { ...prev, lastError: String(e?.message ?? e) } : { ok: false, reason: String(e?.message ?? e) }));
+          });
       }, [refreshRuntime]);
 
       // 空闲时：进入界面拉一次，不轮询
@@ -1287,6 +1313,8 @@ window.__ModuleLoader__.load({
           .finally(() => {
             setBusy(false);
             refresh();
+            // 服务端的阅读统计有延迟：再补一次，避免界面停在旧数字上
+            setTimeout(() => { refresh(); }, 2500);
           });
       }, [refresh, showResult]);
 
@@ -1302,6 +1330,12 @@ window.__ModuleLoader__.load({
       }, [fire]);
 
       /** 停止：只打断上报循环，正常走收尾（会核对时长并刷新界面）。 */
+      /**
+       * 停止：只打断上报循环，服务端会正常走收尾（核对时长、落盘 todaySec）。
+       * 收尾是异步的，所以不能「调完 stop 就立刻刷新」：那一刻 checkin 还没把
+       * 新时长算进 state，dashboard 拿到的是旧快照，界面会闪一下「今日 0 分钟」。
+       * 这里用 status 轮询等 phase 回到 idle，再连刷两次（第二次给服务端统计留余量）。
+       */
       const stopRun = React.useCallback(() => {
         setNotice({ kind: 'warn', text: '正在停止…' });
         call('stop', {})
@@ -1310,7 +1344,27 @@ window.__ModuleLoader__.load({
               setNotice({ kind: 'warn', text: res?.reason || '当前没有正在进行的打卡' });
               setBusy(false);
               refresh();
+              return;
             }
+            // 等 checkin 收尾完成（最多约 20 秒），再刷新真实数据
+            let tries = 0;
+            const waitIdle = () => {
+              tries += 1;
+              call('status')
+                .then((s) => {
+                  const phase = s?.progress?.phase;
+                  if ((phase === 'reporting' || phase === 'verifying') && tries < 20) {
+                    setTimeout(waitIdle, 1000);
+                    return;
+                  }
+                  // 收尾已完成：立刻刷一次，再延迟补一次拿服务端最终统计
+                  setBusy(false);
+                  refresh();
+                  setTimeout(refresh, 2500);
+                })
+                .catch(() => { setBusy(false); refresh(); });
+            };
+            setTimeout(waitIdle, 600);
           })
           .catch((e) => setNotice({ kind: 'err', text: String(e?.message ?? e) }));
       }, [refresh]);

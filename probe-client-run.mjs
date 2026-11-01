@@ -570,8 +570,15 @@ function collectTitleAttrs(node, acc = []) {
     && typeof n.props?.className === 'string'
     && n.props.className.includes('wr-btn-stop'));
   assert.ok(stopBtn, '应渲染 wr-btn-stop 停止按钮');
-  assert.strictEqual(stopBtn.props.disabled, false, '停止按钮必须可点');
+  // 没有 disabled 属性 = 可点；显式 false 也算可点。不能直接 strictEqual(false)。
+  assert.notStrictEqual(stopBtn.props.disabled, true, '停止按钮必须可点');
   assert.ok(typeof stopBtn.props.onClick === 'function', '停止按钮应绑定 onClick');
+  // 达标时运行中的按钮仍应保留绿色（wr-btn-done），不能被运行时样式抹掉
+  const doneLive = findNode(tree, (n) => n.type === 'button'
+    && typeof n.props?.className === 'string'
+    && n.props.className.includes('wr-btn-live'));
+  assert.ok(doneLive, '达标且运行时按钮应保留绿色状态（wr-btn-done + wr-btn-live）');
+  assert.ok(doneLive.props.className.includes('wr-btn-done'), '已达标时不应丢掉 wr-btn-done');
 
   // 点停止 → 请求 /stop
   requested.length = 0;
@@ -606,7 +613,7 @@ function collectTitleAttrs(node, acc = []) {
     && n.props.className.includes('wr-btn-stop')
     && flattenText(n).includes('停止打卡'));
   assert.ok(stopBtn, '应仍有可点的停止按钮');
-  assert.strictEqual(stopBtn.props.disabled, false, '停止按钮必须可点');
+  assert.notStrictEqual(stopBtn.props.disabled, true, '停止按钮必须可点');
   dash.progress = originalDash;
   Object.assign(st, originalSt);
   await settle(panelComp, {}, 2);
