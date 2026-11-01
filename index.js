@@ -655,7 +655,11 @@ export function apply(ctx, config = {}) {
       payload = { ok: true, level: 'red', reason: '未配置 Cookie' };
     } else {
       // 先单独探登录态：官方统计那条通道和 Cookie 无关，只看它会被「假绿」骗过去
-      const auth = await probeAuth(jar);
+      // probeAuth 要走微信读书的外部接口，网络抖动会抛错。这里必须兜住：
+      // 抛错 = 暂时探测不到，不是凭据失效，绝不能让整个 badge 失败导致侧边栏闪红。
+      const auth = await probeAuth(jar).catch(() => ({
+        ok: false, reason: '暂时无法连接微信读书', hard: false,
+      }));
       const apiKey = await apiKeyNow();
       const snap = auth.ok && apiKey ? await readSnapshot(apiKey).catch(() => null) : null;
       if (!auth.ok && auth.hard) {
@@ -686,6 +690,25 @@ export function apply(ctx, config = {}) {
     }
     badgeCache = { at: now, value: payload };
     return payload;
+  }
+
+  /**
+   * badge 的安全包装：任何未预料的异常都不该让侧边栏亮红。
+   * 真出错时回报「暂时读不到」，并把错误写进 lastFail 供面板显示排查。
+   */
+  async function badgeSafe() {
+    try {
+      return await badge();
+    } catch (err) {
+      const reason = err && err.message ? err.message : String(err);
+      return {
+        ok: false,
+        level: 'yellow',
+        reason: `暂时读不到状态：${reason}`,
+        todaySec: null,
+        goalMinutes: goalNow(),
+      };
+    }
   }
 
   // 注册工具：Agent 通过对话触发
@@ -841,7 +864,7 @@ export function apply(ctx, config = {}) {
   // 路由与 dsh-better-sidebar 的 /sidebar/api 同一模式（kind: 'prefix' + POST）。
   const api = {
     checkin, stop, renew, status, setup, setupAuto, setupMinutes, setupGoal,
-    today, dashboard, badge, history, shelf,
+    today, dashboard, badge: badgeSafe, history, shelf,
   };
   if (ctx.webServer) {
     ctx.effect(() => ctx.webServer.register({

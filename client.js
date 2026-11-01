@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.1.3';
+    const PLUGIN_VERSION = '1.1.4';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -607,27 +607,62 @@ window.__ModuleLoader__.load({
      *   红 = 凭据失效 / 未配置 / 最近一次运行报错
      * 首次拿到数据前不画点，避免闪一下又变色。
      */
+    /**
+     * 侧边栏三色点：
+     *   绿 = 今天已达成目标
+     *   黄 = 今天还没达标
+     *   红 = 凭据失效 / 未配置 / 最近一次运行报错
+     *
+     * 关键：badge 接口内部要打微信读书的外部接口（登录态探测 + 官方统计），
+     * 网络抖一下就会失败。单次失败绝不能直接把点涂红 —— 否则插件明明一切正常，
+     * 图标却时不时闪红。所以这里约定：
+     *   1. 只有接口明确回 `ok:true, level:'red'` 才算硬失败（凭据真失效）；
+     *   2. fetch 抛错（网络/超时）只记一次失败，连续失败 2 次才转红；
+     *   3. 转红后必须连续 2 次拿到 green/yellow 才恢复，避免来回跳；
+     *   4. 首帧拿到数据前不画点，避免闪一下又变色。
+     */
     function SidebarIcon({ size }) {
       const [level, setLevel] = React.useState('idle');
       const [goal, setGoal] = React.useState(10);
       React.useEffect(() => {
         let alive = true;
+        let softFails = 0;   // 连续的网络类失败次数
+        let recoveries = 0;  // 转红后连续恢复次数
         const tick = () => {
           call('badge')
             .then((res) => {
               if (!alive) return;
-              setLevel(res?.level || 'yellow');
-              if (Number.isFinite(res?.goalMinutes)) setGoal(res.goalMinutes);
+              const lv = res && res.ok !== false && typeof res.level === 'string' ? res.level : '';
+              if (lv === 'green' || lv === 'yellow' || lv === 'red') {
+                if (Number.isFinite(res.goalMinutes)) setGoal(res.goalMinutes);
+                // 红点要两次确认才摘掉，防止网络时好时坏导致图标频闪
+                if (level === 'red' && lv !== 'red') {
+                  recoveries += 1;
+                  if (recoveries < 2) return;
+                }
+                recoveries = 0;
+                softFails = 0;
+                setLevel(lv);
+                return;
+              }
+              // 接口回了但形状不对：当作一次软失败，不立刻变红
+              softFails += 1;
+              if (softFails >= 2) setLevel('red');
             })
-            .catch(() => { if (alive) setLevel('red'); });
+            .catch(() => {
+              if (!alive) return;
+              softFails += 1;
+              if (softFails >= 2) setLevel('red');
+            });
         };
         tick();
         const timer = setInterval(tick, BADGE_POLL_MS);
         return () => { alive = false; clearInterval(timer); };
-      }, []);
+      }, [level]);
       const title = level === 'green' ? `今日已达成目标 ${goal} 分钟`
         : level === 'yellow' ? `今日尚未达成目标 ${goal} 分钟`
-          : level === 'red' ? '连接异常或凭据失效' : '正在读取状态';
+          : level === 'red' ? '连接异常或凭据失效'
+            : '正在读取状态';
       return h('span', { className: 'wr-nav', title },
         h(BookGlyph, { size }),
         h('span', { className: `wr-nav-dot wr-nav-dot-${level}` }));
