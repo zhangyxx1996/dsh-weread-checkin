@@ -142,7 +142,12 @@ export function apply(ctx, config = {}) {
   /** 徽标缓存：官方接口有限流，轮询时不能每次都真打。 */
   let badgeCache = { at: 0, value: null };
   /** 打卡运行中的进度快照，供界面每 30 秒轮询。running 时才有意义。 */
-  let progress = { done: 0, total: 0, startedAt: 0, todayBefore: 0, todaySec: null, phase: 'idle' };
+  let progress = { done: 0, total: 0, startedAt: 0, todayBefore: 0, todaySec: null, phase: 'idle', unlimited: false, targetMinutes: 0 };
+  /**
+   * 当前这轮打卡的中止控制器。「继续打卡」是可以随时叫停的，所以必须能中断
+   * runReading 内部的 30 秒 sleep（中止后它会抛出「已取消」，被 catch 收住）。
+   */
+  let runAbort = null;
 
   async function load() {
     try {
@@ -328,8 +333,11 @@ export function apply(ctx, config = {}) {
    * 即今天真实读了 3 分钟、目标 10 分钟、单次 10 分钟 → 只补 7 分钟，
    * 当日总量凑满目标就停，不超额上报（超额对账号没好处，也更容易触发风控）。
    * 已经达标时直接返回 ok 且不回传任何请求。
+   *
+   * `unlimited: true` 是「继续打卡」模式：不做差额计算，一直上报到用户点停止。
+   * 此时 `minutes` 若给了就把「单次打卡时长」当作本次上限，否则真的不设上限。
    */
-  async function checkin({ minutes, force } = {}) {
+  async function checkin({ minutes, force, unlimited } = {}) {
     const { jar, base } = await credentials();
     if (!jar.wr_skey) {
       return { ok: false, reason: '未配置 Cookie（缺少 wr_skey）。请到「插件 → 微信读书打卡」设置页粘贴 Cookie', done: 0 };
@@ -350,7 +358,14 @@ export function apply(ctx, config = {}) {
 
       // 算这次要上报多少
       let targetMinutes;
-      if (Number.isFinite(minutes) && minutes > 0) {
+      let isUnlimited = false;
+      if (unlimited) {
+        // 继续打卡：不套差额策略。给了 minutes 就以此为本轮上限，否则一直跑
+        isUnlimited = !(Number.isFinite(minutes) && minutes > 0);
+        targetMinutes = isUnlimited
+          ? Number.POSITIVE_INFINITY
+          : Math.max(0.5, minutes);
+      } else if (Number.isFinite(minutes) && minutes > 0) {
         targetMinutes = minutes; // 调用方显式指定，不套差额策略
       } else if (force) {
         targetMinutes = minutesNow(); // 显式忽略差额，照常补一整轮
@@ -377,20 +392,26 @@ export function apply(ctx, config = {}) {
         targetMinutes = Math.max(0.5, Math.min(minutesNow(), remainMin));
       }
 
-      const times = MINUTES_TO_TIMES(targetMinutes);
+      const times = isUnlimited ? Number.POSITIVE_INFINITY : MINUTES_TO_TIMES(targetMinutes);
+      runAbort = new AbortController();
       progress = {
         done: 0,
-        total: times,
+        total: isUnlimited ? 0 : times,
         startedAt: Date.now(),
         todayBefore: todayBefore ?? 0,
         todaySec: todayBefore ?? null,
         phase: 'reporting',
+        // 界面要知道这是「继续打卡」模式：进度分母是未知的，按钮要变成「停止」
+        unlimited: isUnlimited,
+        targetMinutes: isUnlimited ? 0 : targetMinutes,
       };
+      // runReading 用 index <= times 循环，Infinity 天然等价于「不设上限」
       const result = await runReading({
         base,
         cookies: jar,
         times,
         intervalMs: REPORT_INTERVAL_MS,
+        signal: runAbort.signal,
         onSkey: (skey) => {
           state.skey = skey;
           save();
@@ -416,18 +437,23 @@ export function apply(ctx, config = {}) {
         ? after.todaySec - before.todaySec
         : null;
 
+      // 用户中途点了「停止」：这不是失败，走正常收尾，只是标记一下
+      const stopped = Boolean(runAbort?.signal?.aborted);
+
       state.lastRunAt = Date.now();
       state.lastDone = result.done;
       state.lastErrors = result.errors;
       state.lastDay = ymdLocal(new Date());
       state.running = false;
-      // 只有请求层面确实错了才留红点；「上报被接受但时长没涨」不算硬失败
-      state.lastFail = result.errors.length ? result.errors.join('；') : '';
+      // 只有请求层面确实错了才留红点；「上报被接受但时长没涨」不算硬失败。
+      // 用户主动停止也不算失败，否则侧边栏会误亮红点。
+      state.lastFail = (!stopped && result.errors.length) ? result.errors.join('；') : '';
       progress = {
         ...progress,
         phase: 'idle',
         todaySec: after?.ok ? after.todaySec : progress.todaySec,
       };
+      runAbort = null;
       await save();
       // 刚跑完，徽标必须重新问一次官方，不能吃旧缓存
       badgeCache = { at: 0, value: null };
@@ -441,16 +467,21 @@ export function apply(ctx, config = {}) {
         skeyRefreshes: result.skeyRefreshes,
         verified: dToday !== null,
         dToday,
+        stopped,
+        unlimited: isUnlimited,
         todaySec: todayAfter,
         goalMinutes: goalMin,
         goalReached: todayAfter !== null ? (todayAfter ?? 0) >= goalSec : null,
         readDays: after?.ok ? after.readDays : null,
-        reason: dToday === null
-          ? (apiKey ? '未取到官方统计，无法验证' : '未配置 WEREAD_API_KEY，未验证时长是否计入')
-          : undefined,
+        reason: stopped
+          ? `已停止，本次上报 ${result.done} 次（约 ${result.minutes} 分钟）`
+          : (dToday === null
+            ? (apiKey ? '未取到官方统计，无法验证' : '未配置 WEREAD_API_KEY，未验证时长是否计入')
+            : undefined),
       };
     } catch (err) {
       state.running = false;
+      runAbort = null;
       state.lastErrors = [err.message];
       state.lastFail = err.message;
       progress = { ...progress, phase: 'idle' };
@@ -458,6 +489,18 @@ export function apply(ctx, config = {}) {
       await save();
       return { ok: false, reason: err.message, done: 0 };
     }
+  }
+
+  /**
+   * 停止正在进行的打卡。只对「继续打卡」这类长跑有意义，普通打卡一跑完就结束了。
+   * 中止信号会让 runReading 里 30 秒的 sleep 立刻抛错，所以能秒停，不用等当前这一轮。
+   */
+  function stop() {
+    if (!state.running || !runAbort) {
+      return { ok: false, reason: '当前没有正在进行的打卡' };
+    }
+    runAbort.abort();
+    return { ok: true, message: '正在停止…' };
   }
 
   /** 只刷新密钥，用于排查登录态。 */
@@ -653,6 +696,10 @@ export function apply(ctx, config = {}) {
             type: 'number',
             description: '要上报的阅读分钟数（每次上报约 30 秒）。不传则用插件配置的默认值。',
           },
+          unlimited: {
+            type: 'boolean',
+            description: '继续打卡模式：不按「补差额」计算，持续上报到用户让你停止为止。用户说「继续打卡」「一直打卡」时用这个。',
+          },
         },
       },
       // 规范值结构化返回，render 只负责投影成模型可见文本
@@ -673,6 +720,8 @@ export function apply(ctx, config = {}) {
             goalMinutes: { type: 'number', description: '用户设定的每日目标（分钟）' },
             goalReached: { type: 'boolean', description: '今日是否已达每日目标' },
             alreadyDone: { type: 'boolean', description: '今日已达标、本次未上报' },
+            stopped: { type: 'boolean', description: '是否被用户中途停止' },
+            unlimited: { type: 'boolean', description: '是否为不限时长的继续打卡' },
             reason: { type: 'string', description: '失败原因或未验证的说明' },
             errors: { type: 'array', items: { type: 'string' }, description: '运行中的错误列表' },
           },
@@ -683,6 +732,9 @@ export function apply(ctx, config = {}) {
             return [{ type: 'text', text: `今日已达标（目标 ${value.goalMinutes} 分钟），无需再补。` }];
           }
           const goal = value.goalMinutes !== undefined ? `（每日目标 ${value.goalMinutes} 分钟${value.goalReached ? '，已达成' : ''}）` : '';
+          if (value.stopped) {
+            return [{ type: 'text', text: `已按你的要求停止打卡：本次上报 ${value.done} 次（约 ${value.minutes} 分钟）${goal}。` }];
+          }
           if (value.verified) {
             const head = value.dToday > 0
               ? `微信读书打卡成功：今日阅读时长 +${value.dToday} 秒（累计 ${value.todaySec} 秒）`
@@ -700,7 +752,7 @@ export function apply(ctx, config = {}) {
         },
       },
       execute: async (args) => {
-        const res = await checkin({ minutes: args?.minutes });
+        const res = await checkin({ minutes: args?.minutes, unlimited: args?.unlimited });
         return {
           ok: Boolean(res.ok),
           done: res.done ?? 0,
@@ -713,6 +765,8 @@ export function apply(ctx, config = {}) {
           goalMinutes: res.goalMinutes,
           goalReached: res.goalReached,
           alreadyDone: Boolean(res.alreadyDone),
+          stopped: Boolean(res.stopped),
+          unlimited: Boolean(res.unlimited),
           reason: res.reason,
           errors: res.errors,
         };
@@ -777,7 +831,7 @@ export function apply(ctx, config = {}) {
   // Client 面板的数据接口：按钮与工具、命令走完全相同的实现。
   // 路由与 dsh-better-sidebar 的 /sidebar/api 同一模式（kind: 'prefix' + POST）。
   const api = {
-    checkin, renew, status, setup, setupAuto, setupMinutes, setupGoal,
+    checkin, stop, renew, status, setup, setupAuto, setupMinutes, setupGoal,
     today, dashboard, badge, history, shelf,
   };
   if (ctx.webServer) {
@@ -816,6 +870,8 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => () => {
     if (tickTimer) clearInterval(tickTimer);
+    // 卸载时把长跑中的打卡也掐掉，否则无限模式会一直挂着
+    if (runAbort) runAbort.abort();
   }, 'weread cleanup');
 
   load();

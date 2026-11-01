@@ -22,7 +22,11 @@ const React = {
   useState(init) {
     const s = current;
     const i = s.cursor++;
-    if (!(i in s.state)) s.state[i] = typeof init === 'function' ? init() : init;
+    // 用 hasOwnProperty 而不是 `in`：state 是稀疏数组，`in` 会命中原型链上的
+    // "0"/"1" 之类，导致新增的 state 永远拿不到初值。
+    if (!Object.prototype.hasOwnProperty.call(s.state, i)) {
+      s.state[i] = typeof init === 'function' ? init() : init;
+    }
     return [s.state[i], (v) => { s.state[i] = typeof v === 'function' ? v(s.state[i]) : v; }];
   },
   useCallback(fn) { current.cursor++; return fn; },
@@ -51,6 +55,8 @@ const responses = {
   // v0.2.0 侧边栏三色点：没这个假响应时 SidebarIcon 会走 catch 一律变红
   badge: { ok: true, level: 'green', reason: '', todaySec: 1230, goalMinutes: 20, readDays: 558 },
   checkin: { ok: true, done: 20, minutes: 10, errors: [], skeyRefreshes: 1, verified: true, dToday: 600, todaySec: 1830, readDays: 559, goalMinutes: 20, goalReached: true },
+  // v1.1.0 停止接口
+  stop: { ok: true, message: '正在停止…' },
   setupMinutes: { ok: true, minutes: 15, message: '单次打卡时长已设为 15 分钟' },
   setupGoal: { ok: true, goalMinutes: 20, message: '每日目标已设为 20 分钟' },
   setupAuto: { ok: true, autoTime: '09:15', message: '已设为每天 09:15 自动打卡' },
@@ -112,9 +118,15 @@ let loaded = null;
 globalThis.window = { __ModuleLoader__: { load(reg) { loaded = reg; } } };
 
 const requested = [];
+// 挂起中的请求数：用于模拟「打卡正在跑、接口还没返回」的状态
+const pendingHolds = new Set();
 async function fakeFetch(url) {
   requested.push(url);
   const method = String(url).split('/').pop();
+  if (pendingHolds.has(method)) {
+    // 永不 resolve，让 busy 一直保持 true
+    await new Promise(() => {});
+  }
   const body = responses[method] ?? { ok: false, error: 'unknown method ' + method };
   return { ok: true, status: 200, json: async () => body };
 }
@@ -210,6 +222,40 @@ function renderTree(comp, props = {}, runEffects = true) {
     }
   }
   return out;
+}
+
+/**
+ * 只读渲染：递归展开函数组件以拿到完整元素树，但**不写回任何 hook 槽位**。
+ *
+ * 为什么需要它：findNode / flattenText / collectAllClasses 这类纯查找函数
+ * 每次都会重渲染涉及的组件，而真实 React 里组件渲染是按部就班、槽位有状态的。
+ * 若让查找也走 renderTree，它会推进 cursor 并可能覆盖 state 槽位，导致
+ * 「点了一下按钮，状态却读不到」这类假失败。这里把 store 快照进出还原，
+ * 让查找对状态完全无副作用。
+ */
+function peekTree(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return node;
+  if (typeof node.type !== 'function') {
+    return {
+      ...node,
+      children: (node.children ?? []).map((c) => peekTree(c)),
+    };
+  }
+  const saved = stores.get(node.type);
+  const snapshot = saved
+    ? { state: [...saved.state], pending: [...saved.pending], cursor: saved.cursor }
+    : null;
+  try {
+    return peekTree(renderTree(node.type, node.props ?? {}, false));
+  } finally {
+    if (snapshot) {
+      saved.state = snapshot.state;
+      saved.pending = snapshot.pending;
+      saved.cursor = snapshot.cursor;
+    } else if (saved) {
+      stores.delete(node.type);
+    }
+  }
 }
 
 /** 渲染一次组件并摊成纯文本。 */
@@ -437,6 +483,102 @@ function collectTitleAttrs(node, acc = []) {
   assert.ok(css.includes('.wr-spin'), '缺少打卡中的转圈样式');
   assert.ok(/\.wr-btn-loading[^{]*\{[^}]*cursor:\s*not-allowed/.test(css), '打卡中样式应含 cursor:not-allowed');
   console.log('✓ 打卡中按钮样式 → 灰色 .wr-btn-loading + 转圈 + not-allowed');
+}
+
+// 10) 继续打卡（v1.1.0）：达标后出现「继续打卡」→ 弹出时长输入 → 可随时停止
+{
+  const css = styleTags[0].textContent;
+  assert.ok(css.includes('.wr-btn-stop'), '缺少「停止」按钮样式');
+  assert.ok(css.includes('.wr-ask'), '缺少「继续打卡」时长询问面板样式');
+
+  // 达标状态下应能看到「继续打卡」，且今日大按钮是「已达标」的绿态
+  const treeA = renderTree(panelComp);
+  const txtA = flattenText(treeA);
+  assert.ok(txtA.includes('继续打卡'), '达标后应出现「继续打卡」按钮');
+  const mainBtnA = findNode(treeA, (n) => n.type === 'button'
+    && typeof n.props?.className === 'string'
+    && n.props.className.includes('wr-btn-done'));
+  assert.ok(mainBtnA, '达标后主按钮应是 wr-btn-done（绿色）');
+  assert.strictEqual(mainBtnA.props.disabled, true, '达标后主按钮应不可点');
+
+  // 点「继续打卡」→ 弹出输入面板，留空即「一直打卡」
+  clickButton(panelComp, {}, '继续打卡');
+  await settle(panelComp, {}, 2);
+  const treeB = renderTree(panelComp);
+  const txtB = flattenText(treeB);
+  assert.ok(txtB.includes('继续打卡多久'), '点「继续打卡」后应询问时长');
+  assert.ok(txtB.includes('一直打卡'), '留空时按钮文案应是「一直打卡」');
+  const input = findNode(treeB, (n) => n.type === 'input'
+    && typeof n.props?.placeholder === 'string'
+    && n.props.placeholder.includes('留空'));
+  assert.ok(input, '应有可输入的时长输入框');
+
+  // 不输入直接点「一直打卡」→ 请求 unlimited 模式
+  requested.length = 0;
+  const btnGo = findNode(treeB, (n) => n.type === 'button'
+    && flattenText(n).includes('一直打卡') && typeof n.props?.onClick === 'function');
+  assert.ok(btnGo, '应有「一直打卡」按钮');
+  btnGo.props.onClick();
+  await settle(panelComp, {}, 6);
+  assert.ok(requested.some((u) => u.endsWith('/checkin')), '「一直打卡」应发起 checkin 请求');
+
+  // 输入 30 分钟 → 按钮变「开始」
+  clickButton(panelComp, {}, '继续打卡');
+  await settle(panelComp, {}, 2);
+  const treeC = renderTree(panelComp);
+  const inputC = findNode(treeC, (n) => n.type === 'input'
+    && typeof n.props?.placeholder === 'string'
+    && n.props.placeholder.includes('留空'));
+  assert.ok(inputC, '重新打开后应仍有输入框');
+  inputC.props.onChange({ target: { value: '30' } });
+  await settle(panelComp, {}, 2);
+  const txtC = flattenText(renderTree(panelComp));
+  assert.ok(txtC.includes('开始'), '填了时长后按钮应变成「开始」');
+  assert.ok(txtC.includes('60 次') || txtC.includes('约'), '应提示将要上报的次数');
+  console.log('✓ 继续打卡 → 时长输入面板 + 留空「一直打卡」+ 填值「开始」');
+}
+
+// 11) 无限模式进行中：按钮变「停止」且可点
+{
+  const dash = responses.dashboard;
+  const originalProgress = dash.progress;
+  dash.progress = {
+    done: 12, total: 0, startedAt: Date.now(), todayBefore: 1230,
+    todaySec: 1230, phase: 'reporting', unlimited: true, targetMinutes: 0,
+  };
+  // Panel 里存的是上次 refresh() 的快照，改完假后端要再点一次按钮把数据拉回来。
+  // 用「继续打卡 → 一直打卡」这条路正好也会触发 fire('checkin') → refresh()。
+  // 同时把 checkin 挂起，让 busy 保持 true，这才符合「正在跑」的真实状态。
+  pendingHolds.add('checkin');
+  clickButton(panelComp, {}, '继续打卡');
+  await settle(panelComp, {}, 2);
+  const treeAsk = renderTree(panelComp);
+  const btnGo = findNode(treeAsk, (n) => n.type === 'button'
+    && flattenText(n).includes('一直打卡') && typeof n.props?.onClick === 'function');
+  assert.ok(btnGo, '应能找到「一直打卡」按钮');
+  btnGo.props.onClick();
+  await tick();
+  await tick();
+
+  const tree = renderTree(panelComp);
+  const txt = flattenText(tree);
+  assert.ok(txt.includes('停止打卡'), '无限模式进行中，按钮应是「停止打卡」，实际: ' + txt.slice(0, 120));
+  assert.ok(txt.includes('持续打卡中'), '应提示正在持续打卡');
+  const stopBtn = findNode(tree, (n) => n.type === 'button'
+    && typeof n.props?.className === 'string'
+    && n.props.className.includes('wr-btn-stop'));
+  assert.ok(stopBtn, '应渲染 wr-btn-stop 停止按钮');
+  assert.strictEqual(stopBtn.props.disabled, false, '停止按钮必须可点');
+  assert.ok(typeof stopBtn.props.onClick === 'function', '停止按钮应绑定 onClick');
+
+  // 点停止 → 请求 /stop
+  requested.length = 0;
+  stopBtn.props.onClick();
+  await settle(panelComp, {}, 4);
+  assert.ok(requested.some((u) => u.endsWith('/stop')), '点停止应请求 /stop 接口');
+  pendingHolds.delete('checkin');
+  dash.progress = originalProgress;
+  console.log('✓ 无限模式 → 按钮变「停止打卡」可点，点击请求 /stop');
 }
 
 console.log('\n请求过的接口:', [...new Set(requested.map((u) => u.split('/').pop()))].join(', '));

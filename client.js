@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.0.2';
+    const PLUGIN_VERSION = '1.1.0';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -242,6 +242,32 @@ window.__ModuleLoader__.load({
 .wr-btn-ghost:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
 .wr-btn-ghost:disabled { opacity: .45; cursor: default; }
 .wr-btn-sm { padding: 5px 11px; font-size: 12px; }
+/* 无限模式下的「停止」：不动用危险红，只是一眼能看出可以点 */
+.wr-btn-stop {
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  border: 1px solid var(--dsw-alias-border-l2);
+  cursor: pointer;
+}
+.wr-btn-stop:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-3); }
+.wr-stop-icon {
+  width: 9px; height: 9px; flex: none; margin-right: 2px;
+  border-radius: 2px; background: currentColor;
+}
+
+/* 「继续打卡」的时长询问面板 */
+.wr-ask {
+  margin-top: 12px; padding: 12px 13px;
+  border-radius: 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-2);
+}
+.wr-ask-title { font-size: 12.5px; font-weight: 600; margin-bottom: 9px; }
+.wr-ask-row { display: flex; align-items: center; gap: 8px; }
+.wr-ask-row .wr-input { flex: 1; min-width: 0; }
+.wr-ask-unit { font-size: 12.5px; color: var(--dsw-alias-label-secondary); flex: none; }
+.wr-ask-actions { display: flex; gap: 8px; margin-top: 9px; }
+.wr-ask .wr-hint { margin: 7px 0 0; }
 
 /* 打卡中的转圈 */
 .wr-spin {
@@ -619,7 +645,7 @@ window.__ModuleLoader__.load({
     }
 
     /** 今日打卡卡片：进度按「每日目标」算，打卡中按钮变灰不可点。 */
-    function TodayCard({ data, busy, onRun }) {
+    function TodayCard({ data, busy, onRun, onContinue, onStop }) {
       const t = data.today ?? {};
       const sec = t.sec ?? 0;
       const goalMinutes = data.goalMinutes ?? 10;
@@ -629,6 +655,8 @@ window.__ModuleLoader__.load({
       const progress = data.progress ?? {};
       const reporting = busy && progress.phase === 'reporting';
       const verifying = busy && progress.phase === 'verifying';
+      // 继续打卡模式：分母未知，进度条退回「按今日目标」展示，但按钮要变成「停止」
+      const unlimited = Boolean(progress.unlimited) && reporting;
       const total = Number(progress.total) || 0;
       const done = Number(progress.done) || 0;
       const liveSec = reporting && Number.isFinite(progress.todaySec)
@@ -637,8 +665,27 @@ window.__ModuleLoader__.load({
       const shownSec = Math.max(sec, liveSec);
       const remainMin = Math.max(0, Math.ceil((goalSec - shownSec) / 60));
 
+      // 「继续打卡」的时长输入面板
+      const [askOpen, setAskOpen] = React.useState(false);
+      const [askText, setAskText] = React.useState('');
+      const askRef = React.useRef(null);
+      React.useEffect(() => {
+        if (askOpen && askRef.current) {
+          try { askRef.current.focus(); } catch { /* 忽略聚焦失败 */ }
+        }
+      }, [askOpen]);
+      // 打卡从「进行中」回到「结束」时收起面板，避免它一直挂着。
+      // 注意不能写成 `if (!busy && askOpen) setAskOpen(false)`：那样只要面板一打开、
+      // 而此刻并没在打卡（达标后正是这种状态），effect 立刻把它关掉，按钮点了没反应。
+      const wasBusyRef = React.useRef(false);
+      React.useEffect(() => {
+        if (wasBusyRef.current && !busy) setAskOpen(false);
+        wasBusyRef.current = busy;
+      }, [busy]);
+
       let stateText;
       if (verifying) stateText = '正在用官方接口核对时长…';
+      else if (unlimited) stateText = `持续打卡中 · 已 ${done} 次（约 ${Math.round((done * 30) / 60)} 分钟）`;
       else if (reporting) stateText = `${done}${total ? `/${total}` : ''} 次上报中`;
       else if (busy) stateText = '正在上报…';
       else if (reached) stateText = '✓ 已达成今日目标';
@@ -648,9 +695,27 @@ window.__ModuleLoader__.load({
       // 打卡中按钮必须是「灰色的打卡中」，不能还显示可点的文案
       let btnLabel;
       if (verifying) btnLabel = '核对中…';
+      else if (unlimited) btnLabel = `停止打卡 · 已 ${done} 次`;
       else if (busy) btnLabel = (reporting && total) ? `打卡中 ${done}/${total}` : '打卡中…';
       else if (reached) btnLabel = `今日已达标 · ${Math.round(goalMinutes)} 分钟`;
       else btnLabel = `立即打卡 · 补 ${Math.max(0.5, Math.min(data.minutes ?? 10, remainMin || 0.5))} 分钟`;
+
+      // 继续打卡：解析用户输入的时长。空 = 不设上限（一直打到手动停止）
+      const submitContinue = () => {
+        const raw = askText.trim();
+        if (raw === '') {
+          setAskOpen(false);
+          onContinue(null);
+          return;
+        }
+        const n = Number.parseFloat(raw);
+        if (!Number.isFinite(n) || n <= 0) {
+          // 非法输入按「不设上限」处理会让用户意外长跑，所以直接忽略并保持面板
+          return;
+        }
+        setAskOpen(false);
+        onContinue(Math.min(600, Math.max(0.5, n)));
+      };
 
       return h('div', { className: 'wr-section' },
         h('div', { className: 'wr-section-title' }, h('span', null, '今日')),
@@ -676,12 +741,64 @@ window.__ModuleLoader__.load({
           h('div', { style: { marginTop: '18px' } },
             h('button', {
               type: 'button',
-              className: 'wr-btn' + (busy ? ' wr-btn-loading' : '') + (!busy && reached ? ' wr-btn-done' : ''),
-              disabled: busy || !configured || reached,
-              onClick: onRun,
+              // 无限模式：按钮变成「停止」，可点（不是灰色禁用态）
+              className: 'wr-btn'
+                + (busy && !unlimited ? ' wr-btn-loading' : '')
+                + (unlimited ? ' wr-btn-stop' : '')
+                + (!busy && reached ? ' wr-btn-done' : ''),
+              disabled: unlimited ? false : (busy || !configured || reached),
+              onClick: unlimited ? onStop : onRun,
             },
-            busy ? h('span', { className: 'wr-spin' }) : null,
+            busy && !unlimited ? h('span', { className: 'wr-spin' }) : null,
+            unlimited ? h('span', { className: 'wr-stop-icon' }) : null,
             btnLabel)),
+
+          // 达标后：补一个「继续打卡」，可以指定时长，也可以一直打
+          reached && !busy
+            ? h('div', { style: { marginTop: '10px' } },
+              h('button', {
+                type: 'button',
+                className: 'wr-btn wr-btn-ghost',
+                disabled: !configured,
+                onClick: () => { setAskText(''); setAskOpen(true); },
+              }, '继续打卡'),
+              h('div', { className: 'wr-hint' }, '今天的目标已完成，还可以继续累积时长。'))
+            : null,
+
+          askOpen
+            ? h('div', { className: 'wr-ask' },
+              h('div', { className: 'wr-ask-title' }, '继续打卡多久？'),
+              h('div', { className: 'wr-ask-row' },
+                h('input', {
+                  ref: askRef,
+                  type: 'number',
+                  min: '0.5',
+                  max: '600',
+                  step: '0.5',
+                  className: 'wr-input',
+                  placeholder: '留空 = 一直打卡',
+                  value: askText,
+                  onChange: (e) => setAskText(e.target.value),
+                  onKeyDown: (e) => {
+                    if (e.key === 'Enter') submitContinue();
+                    else if (e.key === 'Escape') setAskOpen(false);
+                  },
+                }),
+                h('span', { className: 'wr-ask-unit' }, '分钟')),
+              h('div', { className: 'wr-hint' },
+                askText.trim() === ''
+                  ? '不填就一直打卡，随时可以停。'
+                  : `将再上报约 ${Math.max(1, Math.round((Number(askText) * 60) / 30))} 次。`),
+              h('div', { className: 'wr-ask-actions' },
+                h('button', { type: 'button', className: 'wr-btn wr-btn-sm', onClick: submitContinue },
+                  askText.trim() === '' ? '一直打卡' : '开始'),
+                h('button', {
+                  type: 'button',
+                  className: 'wr-btn wr-btn-ghost wr-btn-sm',
+                  onClick: () => setAskOpen(false),
+                }, '取消')))
+            : null,
+
           !configured
             ? h('div', { className: 'wr-hint wr-err' }, '未配置 Cookie，请到插件设置页粘贴')
             : null,
@@ -1102,28 +1219,61 @@ window.__ModuleLoader__.load({
         return () => clearInterval(t);
       }, [busy, refresh]);
 
-      const run = React.useCallback(() => {
+      /** 统一的打卡结果提示。continue 与 run 共用。 */
+      const showResult = React.useCallback((res) => {
+        if (res?.stopped) {
+          setNotice({ kind: 'ok', text: res.reason || `已停止，本次上报 ${res.done} 次` });
+        } else if (res?.unlimited || res?.reason?.startsWith?.('已停止')) {
+          setNotice({ kind: 'ok', text: res.reason || '已停止打卡' });
+        } else if (res?.alreadyDone) {
+          setNotice({ kind: 'ok', text: res.reason || '今日已达标，无需再补' });
+        } else if (res?.verified) {
+          setNotice(res.dToday > 0
+            ? { kind: 'ok', text: `打卡生效：今日阅读 +${res.dToday} 秒，累计 ${fmtMin(res.todaySec)} 分钟` }
+            : { kind: 'err', text: `未见效：${res.done} 次上报被接受，但今日时长没有增加` });
+        } else if (res?.ok) {
+          setNotice({ kind: 'warn', text: `已上报 ${res.done} 次；${res.reason || '未能验证是否计入'}` });
+        } else {
+          setNotice({ kind: 'err', text: res?.reason || (res?.errors || []).join('；') || '打卡未完成' });
+        }
+      }, []);
+
+      /** 把请求挂到 busy 上，结束时统一刷新。 */
+      const fire = React.useCallback((method, args) => {
         setBusy(true);
         setNotice(null);
-        call('checkin', {})
-          .then((res) => {
-            if (res?.alreadyDone) {
-              setNotice({ kind: 'ok', text: res.reason || '今日已达标，无需再补' });
-            } else if (res?.verified) {
-              setNotice(res.dToday > 0
-                ? { kind: 'ok', text: `打卡生效：今日阅读 +${res.dToday} 秒，累计 ${fmtMin(res.todaySec)} 分钟` }
-                : { kind: 'err', text: `未见效：${res.done} 次上报被接受，但今日时长没有增加` });
-            } else if (res?.ok) {
-              setNotice({ kind: 'warn', text: `已上报 ${res.done} 次；${res.reason || '未能验证是否计入'}` });
-            } else {
-              setNotice({ kind: 'err', text: res?.reason || (res?.errors || []).join('；') || '打卡未完成' });
-            }
-          })
+        call(method, args)
+          .then(showResult)
           .catch((e) => setNotice({ kind: 'err', text: String(e?.message ?? e) }))
           .finally(() => {
             setBusy(false);
             refresh();
           });
+      }, [refresh, showResult]);
+
+      const run = React.useCallback(() => {
+        fire('checkin', {});
+      }, [fire]);
+
+      /** 继续打卡：minutes 为 null 表示不设上限，一直打到用户点停止。 */
+      const continueRun = React.useCallback((minutes) => {
+        fire('checkin', minutes && minutes > 0
+          ? { unlimited: true, minutes }
+          : { unlimited: true });
+      }, [fire]);
+
+      /** 停止：只打断上报循环，正常走收尾（会核对时长并刷新界面）。 */
+      const stopRun = React.useCallback(() => {
+        setNotice({ kind: 'warn', text: '正在停止…' });
+        call('stop', {})
+          .then((res) => {
+            if (!res?.ok) {
+              setNotice({ kind: 'warn', text: res?.reason || '当前没有正在进行的打卡' });
+              setBusy(false);
+              refresh();
+            }
+          })
+          .catch((e) => setNotice({ kind: 'err', text: String(e?.message ?? e) }));
       }, [refresh]);
 
       /** 设置类接口的通用提交。 */
@@ -1169,7 +1319,9 @@ window.__ModuleLoader__.load({
         h('div', { className: 'wr-inner' },
           h(Notice, { notice }),
           h('div', { className: 'wr-cards' },
-            h('div', { className: 'wr-cell' }, h(TodayCard, { data, busy, onRun: run })),
+            h('div', { className: 'wr-cell' }, h(TodayCard, {
+              data, busy, onRun: run, onContinue: continueRun, onStop: stopRun,
+            })),
             h('div', { className: 'wr-cell' }, h(GoalCard, { data, busy, onGoal: setGoal, onMinutes: setMinutes, onAuto: setAuto })),
             h('div', { className: 'wr-cell wr-cell-wide' }, h(CalendarCard, { data })),
             h('div', { className: 'wr-cell' }, h(ShelfCard, { configured })),
