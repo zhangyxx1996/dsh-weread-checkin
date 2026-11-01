@@ -8,8 +8,14 @@
 直指本目录），`remove_bundle` + `install_bundle` 只换软链、不留副本；
 `.plugin-manager/logs/` 里只有 pnpm 安装日志，没有代码快照。
 
-所以**没有 git 就没有历史**：0.1.0 → 0.3.2 全部版本的代码已经因为直接覆盖而丢失。
-本仓库从 0.3.3 开始，之前的无法找回。
+所以**没有 git 就没有历史**：开发期的 0.1.0 → 0.3.2 全部版本的代码已经因为直接覆盖而丢失。
+
+**版本编号从 1.0.0 起算**（`v1.0.0` 是正式的「第一版」，功能完整可用：
+手动打卡 / 定时自动打卡 / 每日目标与打卡时长档位 / 周月日历 / 书架 / 三色状态点 / iOS 风格界面）。
+开发期那串 0.x 只是内部草稿编号，不进历史，也无法找回。
+
+> 提交历史里可能还会看到早期随手打的 `v0.3.3` 标签（建仓时的第一个 tag）。
+> 它和 `v1.0.0` 指向同一份代码，只是编号前的草稿标记，**不要以它作为版本基准**。
 
 ## 每次迭代的流程
 
@@ -24,8 +30,8 @@ $git = 'C:\Users\zhang\.workbuddy\vendor\PortableGit\cmd\git.exe'
 
 # 2. 先提交并打 tag（在装机之前！）
 & $git add -A
-& $git commit -m "v0.3.4: 说明改了什么"
-& $git tag -a v0.3.4 -m "一句话说明"
+& $git commit -m "v1.0.1: 说明改了什么"
+& $git tag -a v1.0.1 -m "一句话说明"
 
 # 3. 再改 package.json 的 version、装机
 #    plugin_manager remove_bundle → install_bundle
@@ -36,14 +42,14 @@ $git = 'C:\Users\zhang\.workbuddy\vendor\PortableGit\cmd\git.exe'
 ## 回滚到某个版本
 
 ```powershell
-& $git checkout v0.3.3 -- .     # 把该版本的文件覆盖回工作区
+& $git checkout v1.0.0 -- .     # 把该版本的文件覆盖回工作区
 # 然后 remove_bundle + install_bundle 让 DSH 重新加载
 ```
 
 或者先看某个版本长什么样：
 
 ```powershell
-& $git worktree add $env:TEMP\wr-old v0.3.3   # 检出到临时目录，不影响当前工作区
+& $git worktree add $env:TEMP\wr-old v1.0.0   # 检出到临时目录，不影响当前工作区
 & $git worktree remove $env:TEMP\wr-old --force
 ```
 

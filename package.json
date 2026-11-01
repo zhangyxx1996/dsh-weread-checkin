@@ -1,6 +1,6 @@
 {
   "name": "dsh-weread-checkin",
-  "version": "0.3.3",
+  "version": "1.0.0",
   "description": "微信读书每日打卡插件：按 30 秒一次上报阅读时长完成打卡，支持面板按钮、/weread 命令、对话触发与每天定时自动执行。",
   "type": "module",
   "private": true,
