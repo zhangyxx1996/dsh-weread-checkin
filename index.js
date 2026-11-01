@@ -569,15 +569,12 @@ export function apply(ctx, config = {}) {
   /** 只读：界面用的完整阅读面板数据（今日 / 本周 / 本月日历 / 累计）。 */
   async function dashboard() {
     const apiKey = await apiKeyNow();
-    if (!apiKey) {
-      return { ok: false, reason: '未配置 WEREAD_API_KEY，无法读取阅读数据', needApiKey: true };
-    }
-    const data = await readDashboard(apiKey, undefined, Math.round(goalNow() * 60)).catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
-    if (!data.ok) return data;
-    // 附上插件自身的运行状态，便于界面统一展示
+    // 插件自身的运行状态：无论读数据成不成功都必须带上。
+    // 否则打卡正在跑时只要 readDashboard 失败（它要并行拉 3 个接口，网络抖动就会失败），
+    // 前端收到的就是不含 progress/running 的错误对象，界面会误判成「没在跑」，
+    // 于是显示「继续打卡」而不是「停止打卡」，用户根本找不到停止入口。
     const { jar, base } = await credentials();
-    return {
-      ...data,
+    const runtime = {
       configured: Boolean(jar.wr_skey),
       hasCookie: Boolean(jar.wr_skey),
       hasBase: Boolean(base),
@@ -591,6 +588,18 @@ export function apply(ctx, config = {}) {
       version: pluginVersion,
       progress: { ...progress },
     };
+    if (!apiKey) {
+      return {
+        ok: false,
+        reason: '未配置 WEREAD_API_KEY，无法读取阅读数据',
+        needApiKey: true,
+        ...runtime,
+      };
+    }
+    const data = await readDashboard(apiKey, undefined, Math.round(goalNow() * 60))
+      .catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
+    if (!data.ok) return { ...data, ...runtime };
+    return { ...data, ...runtime };
   }
 
   /**

@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.1.0';
+    const PLUGIN_VERSION = '1.1.1';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -268,6 +268,12 @@ window.__ModuleLoader__.load({
 .wr-ask-unit { font-size: 12.5px; color: var(--dsw-alias-label-secondary); flex: none; }
 .wr-ask-actions { display: flex; gap: 8px; margin-top: 9px; }
 .wr-ask .wr-hint { margin: 7px 0 0; }
+/* 时长输入框：去掉浏览器数字输入框的上下箭头（用户反馈不想要） */
+.wr-input-num { -moz-appearance: textfield; appearance: textfield; }
+.wr-input-num::-webkit-outer-spin-button,
+.wr-input-num::-webkit-inner-spin-button {
+  -webkit-appearance: none; appearance: none; margin: 0;
+}
 
 /* 打卡中的转圈 */
 .wr-spin {
@@ -653,10 +659,15 @@ window.__ModuleLoader__.load({
       const reached = sec >= goalSec;
       const configured = data.configured !== false;
       const progress = data.progress ?? {};
-      const reporting = busy && progress.phase === 'reporting';
-      const verifying = busy && progress.phase === 'verifying';
+      // 只要服务端报告「有任务在跑」，就算 run。不能用 busy 或 phase 单独判断：
+      // 面板会卸载重挂（切到设置页再回来），busy 会丢；上报间隙 phase 也可能不是
+      // reporting。这两种情况下按钮会错误地变回「已达标」，用户就找不到停止入口了。
+      const running = progress.phase === 'reporting' || progress.phase === 'verifying'
+        || (busy && progress.phase !== 'idle');
+      const reporting = running && progress.phase === 'reporting';
+      const verifying = running && progress.phase === 'verifying';
       // 继续打卡模式：分母未知，进度条退回「按今日目标」展示，但按钮要变成「停止」
-      const unlimited = Boolean(progress.unlimited) && reporting;
+      const unlimited = Boolean(progress.unlimited) && running;
       const total = Number(progress.total) || 0;
       const done = Number(progress.done) || 0;
       const liveSec = reporting && Number.isFinite(progress.todaySec)
@@ -741,20 +752,31 @@ window.__ModuleLoader__.load({
           h('div', { style: { marginTop: '18px' } },
             h('button', {
               type: 'button',
-              // 无限模式：按钮变成「停止」，可点（不是灰色禁用态）
+              // 运行中：按钮就是「停止」，始终可点。其余状态是「立即打卡」/「已达标」。
               className: 'wr-btn'
-                + (busy && !unlimited ? ' wr-btn-loading' : '')
-                + (unlimited ? ' wr-btn-stop' : '')
-                + (!busy && reached ? ' wr-btn-done' : ''),
-              disabled: unlimited ? false : (busy || !configured || reached),
-              onClick: unlimited ? onStop : onRun,
+                + (running ? ' wr-btn-stop' : '')
+                + (!running && reached ? ' wr-btn-done' : ''),
+              disabled: running ? false : (!configured || reached),
+              onClick: running ? onStop : onRun,
             },
-            busy && !unlimited ? h('span', { className: 'wr-spin' }) : null,
-            unlimited ? h('span', { className: 'wr-stop-icon' }) : null,
+            running ? h('span', { className: 'wr-stop-icon' }) : null,
             btnLabel)),
 
+          // 运行中额外给一条整行的醒目「停止」按钮：主按钮在窄屏/长文案下可能被
+          // 挤压，用户反馈过找不到停止入口，所以再给一个不可能错过的入口。
+          running
+            ? h('div', { style: { marginTop: '10px' } },
+              h('button', {
+                type: 'button',
+                className: 'wr-btn wr-btn-stop',
+                onClick: onStop,
+              },
+              h('span', { className: 'wr-stop-icon' }),
+              '停止打卡'))
+            : null,
+
           // 达标后：补一个「继续打卡」，可以指定时长，也可以一直打
-          reached && !busy
+          reached && !running
             ? h('div', { style: { marginTop: '10px' } },
               h('button', {
                 type: 'button',
@@ -771,14 +793,12 @@ window.__ModuleLoader__.load({
               h('div', { className: 'wr-ask-row' },
                 h('input', {
                   ref: askRef,
-                  type: 'number',
-                  min: '0.5',
-                  max: '600',
-                  step: '0.5',
-                  className: 'wr-input',
+                  type: 'text',
+                  inputMode: 'decimal',
+                  className: 'wr-input wr-input-num',
                   placeholder: '留空 = 一直打卡',
                   value: askText,
-                  onChange: (e) => setAskText(e.target.value),
+                  onChange: (e) => setAskText(e.target.value.replace(/[^\d.]/g, '')),
                   onKeyDown: (e) => {
                     if (e.key === 'Enter') submitContinue();
                     else if (e.key === 'Escape') setAskOpen(false);
@@ -1202,22 +1222,41 @@ window.__ModuleLoader__.load({
     /** 主面板。 */
     function Panel() {
       const [data, setData] = React.useState(null);
+      const [runtime, setRuntime] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       const [notice, setNotice] = React.useState(null);
 
-      const refresh = React.useCallback(() => call('dashboard')
-        .then(setData)
-        .catch((e) => setData({ ok: false, reason: String(e?.message ?? e) })), []);
+      // 运行状态单独走 status：它永远返回、开销小、不会因为读阅读数据失败而丢字段。
+      // dashboard 要并行拉 3 个远端接口，一旦失败就拿不到 progress，界面会误判成
+      // 「没在跑」并显示「继续打卡」，用户就找不到停止入口了。
+      const refreshRuntime = React.useCallback(() => call('status')
+        .then((s) => { if (s && s.ok !== false) setRuntime(s); })
+        .catch(() => { /* 运行状态读失败不影响主数据 */ }), []);
+
+      const refresh = React.useCallback(() => {
+        refreshRuntime();
+        return call('dashboard')
+          .then((d) => {
+            setData(d);
+            // dashboard 成功时也带运行状态，一并采纳（比 status 多一次刷新价值）
+            if (d && d.progress) setRuntime(d);
+          })
+          .catch((e) => setData({ ok: false, reason: String(e?.message ?? e) }));
+      }, [refreshRuntime]);
 
       // 空闲时：进入界面拉一次，不轮询
       React.useEffect(() => { refresh(); }, [refresh]);
 
-      // 打卡进行中：每 30 秒拉一次进度
+      // 打卡进行中：每 30 秒拉一次进度。这里也用 runtime 而不是 busy 判断，
+      // 因为「在跑」不只由本组件发起（可能是自动打卡或对话里触发的）。
+      const runningNow = (runtime?.progress?.phase === 'reporting'
+        || runtime?.progress?.phase === 'verifying'
+        || runtime?.running === true);
       React.useEffect(() => {
-        if (!busy) return undefined;
-        const t = setInterval(refresh, RUN_POLL_MS);
+        if (!runningNow && !busy) return undefined;
+        const t = setInterval(() => { refreshRuntime(); }, RUN_POLL_MS);
         return () => clearInterval(t);
-      }, [busy, refresh]);
+      }, [runningNow, busy, refreshRuntime]);
 
       /** 统一的打卡结果提示。continue 与 run 共用。 */
       const showResult = React.useCallback((res) => {
@@ -1315,12 +1354,15 @@ window.__ModuleLoader__.load({
       }
 
       const configured = data.configured !== false;
+      // 运行状态以 runtime（来自 status）为准，dashboard 只是补充。
+      // data 可能因为读远端失败而缺 progress，runtime 不会。
+      const view = runtime ? { ...data, ...runtime } : data;
       return h('div', { className: 'wr-page' },
         h('div', { className: 'wr-inner' },
           h(Notice, { notice }),
           h('div', { className: 'wr-cards' },
             h('div', { className: 'wr-cell' }, h(TodayCard, {
-              data, busy, onRun: run, onContinue: continueRun, onStop: stopRun,
+              data: view, busy, onRun: run, onContinue: continueRun, onStop: stopRun,
             })),
             h('div', { className: 'wr-cell' }, h(GoalCard, { data, busy, onGoal: setGoal, onMinutes: setMinutes, onAuto: setAuto })),
             h('div', { className: 'wr-cell wr-cell-wide' }, h(CalendarCard, { data })),

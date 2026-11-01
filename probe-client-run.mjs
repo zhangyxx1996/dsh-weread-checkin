@@ -542,13 +542,9 @@ function collectTitleAttrs(node, acc = []) {
 {
   const dash = responses.dashboard;
   const originalProgress = dash.progress;
-  dash.progress = {
-    done: 12, total: 0, startedAt: Date.now(), todayBefore: 1230,
-    todaySec: 1230, phase: 'reporting', unlimited: true, targetMinutes: 0,
-  };
-  // Panel 里存的是上次 refresh() 的快照，改完假后端要再点一次按钮把数据拉回来。
-  // 用「继续打卡 → 一直打卡」这条路正好也会触发 fire('checkin') → refresh()。
-  // 同时把 checkin 挂起，让 busy 保持 true，这才符合「正在跑」的真实状态。
+  // 先让 checkin 挂起，点「继续打卡 → 一直打卡」把无限模式启动起来。
+  // 注意：不能先改 progress.phase='reporting' —— 那样「继续打卡」按钮会因为
+  // running=true 而消失（真实场景里 phase 也只有真在跑时才是 reporting）。
   pendingHolds.add('checkin');
   clickButton(panelComp, {}, '继续打卡');
   await settle(panelComp, {}, 2);
@@ -556,7 +552,13 @@ function collectTitleAttrs(node, acc = []) {
   const btnGo = findNode(treeAsk, (n) => n.type === 'button'
     && flattenText(n).includes('一直打卡') && typeof n.props?.onClick === 'function');
   assert.ok(btnGo, '应能找到「一直打卡」按钮');
+  // 假后端此时报告「正在跑无限打卡」，点完按钮触发的 refresh() 就会读到它
+  dash.progress = {
+    done: 12, total: 0, startedAt: Date.now(), todayBefore: 1230,
+    todaySec: 1230, phase: 'reporting', unlimited: true, targetMinutes: 0,
+  };
   btnGo.props.onClick();
+  await tick();
   await tick();
   await tick();
 
@@ -579,6 +581,36 @@ function collectTitleAttrs(node, acc = []) {
   pendingHolds.delete('checkin');
   dash.progress = originalProgress;
   console.log('✓ 无限模式 → 按钮变「停止打卡」可点，点击请求 /stop');
+}
+
+// 12) 回归：dashboard 读失败时，界面仍必须能停止（运行状态来自 status）
+{
+  const dash = responses.dashboard;
+  const st = responses.status;
+  const originalDash = dash.progress;
+  const originalSt = { ...st };
+  // 模拟：打卡在跑，但读阅读数据失败了（readDashboard 要并行拉 3 个远端接口）
+  dash.progress = undefined;
+  st.progress = {
+    done: 5, total: 0, startedAt: Date.now(), todayBefore: 1230,
+    todaySec: 1230, phase: 'reporting', unlimited: true, targetMinutes: 0,
+  };
+  await settle(panelComp, {}, 4);
+  const txt = flattenText(renderTree(panelComp));
+  assert.ok(
+    txt.includes('停止打卡'),
+    'dashboard 丢 progress 时仍应按 status 显示「停止打卡」，实际: ' + txt.slice(0, 140),
+  );
+  const stopBtn = findNode(renderTree(panelComp), (n) => n.type === 'button'
+    && typeof n.props?.className === 'string'
+    && n.props.className.includes('wr-btn-stop')
+    && flattenText(n).includes('停止打卡'));
+  assert.ok(stopBtn, '应仍有可点的停止按钮');
+  assert.strictEqual(stopBtn.props.disabled, false, '停止按钮必须可点');
+  dash.progress = originalDash;
+  Object.assign(st, originalSt);
+  await settle(panelComp, {}, 2);
+  console.log('✓ dashboard 失败兜底 → 仍从 status 认出「在跑」，停止入口不消失');
 }
 
 console.log('\n请求过的接口:', [...new Set(requested.map((u) => u.split('/').pop()))].join(', '));
