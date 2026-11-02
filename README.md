@@ -1,11 +1,11 @@
-# 微信读书打卡（dsh-weread-checkin）
+﻿# 微信读书打卡（dsh-weread-checkin）
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
 在 [DeepSeek Harness](https://github.com/deepseek-ai) 里完成微信读书每日打卡：手动一键、每天定时、或让 AI 代劳。
 
-当前版本 **v1.2.0**（版本号会自动显示在插件面板底部与设置页「关于」里）。
+当前版本 **v1.2.1**（版本号会自动显示在插件面板底部与设置页「关于」里）。
 
 > **只需要一次 Cookie，不需要抓包。** 上报模板有内置兜底，粘一次 Cookie 就能用。
 
@@ -26,14 +26,14 @@
 1. 在浏览器地址栏粘贴这一行，回车：
 
    ```
-   https://codeload.github.com/zhangyxx1996/dsh-weread-checkin/zip/refs/tags/v1.2.0
+   https://codeload.github.com/zhangyxx1996/dsh-weread-checkin/zip/refs/tags/v1.2.1
    ```
 
-   它会**直接开始下载**一个约 80 KB 的文件 `dsh-weread-checkin-1.2.0.zip`（不会跳转到别的页面）。
+   它会**直接开始下载**一个约 80 KB 的文件 `dsh-weread-checkin-1.2.1.zip`（不会跳转到别的页面）。
 
 2. 打开「下载」文件夹，右键这个 zip → **全部解压缩**（Windows 自带，不用装 WinRAR / 7-Zip）。
 
-3. 解压出来是一个名为 `dsh-weread-checkin-1.2.0` 的文件夹，里面应该能直接看到
+3. 解压出来是一个名为 `dsh-weread-checkin-1.2.1` 的文件夹，里面应该能直接看到
    `package.json`、`index.js`、`client.js` 这几个文件。
    **如果打开后里面还套着一层同名文件夹，说明多套了一层，把里面那层拿出来用。**
 
@@ -48,7 +48,7 @@
 > 缺点：zip 是某个版本的定版快照，没有 git 历史。以后想看改了什么、或者想回滚，
 > 只能重新下另一个版本的 zip。
 >
-> 想拿**当前最新代码**而不是定版，把上面链接里的 `tags/v1.2.0` 换成 `heads/main` 即可：
+> 想拿**当前最新代码**而不是定版，把上面链接里的 `tags/v1.2.1` 换成 `heads/main` 即可：
 > `https://codeload.github.com/zhangyxx1996/dsh-weread-checkin/zip/refs/heads/main`
 > （下载的文件名会变成 `dsh-weread-checkin-main.zip`）。想更新时重新下一遍、解压覆盖原目录即可。
 

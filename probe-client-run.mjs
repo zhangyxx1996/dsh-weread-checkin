@@ -36,7 +36,17 @@ const React = {
   },
   useCallback(fn) { current.cursor++; return fn; },
   useMemo(fn) { current.cursor++; return fn(); },
-  useRef(v) { current.cursor++; return { current: v }; },
+  /*
+   * useRef 必须跨渲染保留同一个对象，否则 ref 在每次渲染时都被重置成初值，
+   * 用 ref 做的「在途锁 / 请求序号」在模拟器里就永远失效——
+   * 测出来的不是组件行为，而是模拟器的 bug。
+   */
+  useRef(v) {
+    const s = current;
+    const i = s.cursor++;
+    if (!Object.prototype.hasOwnProperty.call(s.refs, i)) s.refs[i] = { current: v };
+    return s.refs[i];
+  },
   useEffect(fn) { current.cursor++; current.pending.push(fn); },
 };
 
@@ -163,13 +173,26 @@ const responses = {
     ok: true, totalBookCount: 3, totalNoteCount: 9, noteTotal: 9, truncated: false,
     books: [
       { bookId: '834464', title: '活着', author: '余华', cover: '', noteCount: 7, raw: [7, 0, 0], lastAt: new Date(2024, 4, 15).getTime(), progress: 100 },
+      { bookId: '24953405', title: '看不见的城市', author: '卡尔维诺', cover: '', noteCount: 1, raw: [1, 0, 0], lastAt: new Date(2023, 2, 2).getTime(), progress: 21 },
       { bookId: '750578', title: '囚徒健身', author: '保罗·威德', cover: '', noteCount: 2, raw: [0, 2, 0], lastAt: new Date(2022, 5, 1).getTime(), progress: 97 },
     ],
   },
-  // v1.3.0 单本划线：传给活着的 bookId 才有内容，其余返回空（模拟「想法不是划线」）
-  bookmarks: {
-    ok: true, bookId: '834464', title: '活着', author: '余华', total: 1,
-    marks: [{ id: '834464_5_1', text: '我知道黄昏正在转瞬即逝，黑夜从天而降了。', chapter: '五', at: 1557891659000, range: '15073-15141' }],
+  // v1.3.0 单本划线：按 bookId 返回不同内容，才能测出「换书竞态」是否张冠李戴
+  bookmarks: (body) => {
+    const id = String(body?.bookId ?? '');
+    if (id === '750578') {
+      return { ok: true, bookId: '750578', title: '囚徒健身', author: '保罗·威德', total: 0, marks: [] };
+    }
+    if (id === '24953405') {
+      return {
+        ok: true, bookId: '24953405', title: '看不见的城市', author: '卡尔维诺', total: 1,
+        marks: [{ id: '24953405_1_1', text: '地狱里的城市总是这样：愿望太多，而时间太少。', chapter: '城市与欲望 之一', at: 1582361979000, range: '1-40' }],
+      };
+    }
+    return {
+      ok: true, bookId: id || '834464', title: '活着', author: '余华', total: 1,
+      marks: [{ id: '834464_5_1', text: '我知道黄昏正在转瞬即逝，黑夜从天而降了。', chapter: '五', at: 1557891659000, range: '15073-15141' }],
+    };
   },
   dashboard: {
     ok: true, configured: true, autoTime: '08:30', minutes: 10, goalMinutes: 20, lastDayDone: true, lastRunAt: Date.now(), lastFail: '',
@@ -208,6 +231,8 @@ let loaded = null;
 globalThis.window = { __ModuleLoader__: { load(reg) { loaded = reg; } } };
 
 const requested = [];
+/** 全量请求记录：后面的小节会清空 requested 做局部计数，汇总行要用这个。 */
+const allRequested = [];
 // 挂起中的请求数：用于模拟「打卡正在跑、接口还没返回」的状态
 const pendingHolds = new Set();
 /**
@@ -217,20 +242,40 @@ const pendingHolds = new Set();
  * 只失败一次，所以第二次请求会拿到正常假数据。
  */
 const onceFailures = new Map();
-async function fakeFetch(url) {
+/**
+ * 延迟返回：method → 按调用顺序消费的毫秒数队列。
+ *
+ * 用来复现「点了 A 还没回来又点 B」的竞态：给 A 排长延迟、B 排短延迟，
+ * 于是 B 的响应先落地、A 的后落地。没有守卫时 A 会把自己的划线写进 B 的展开区，
+ * 用户看到的是**另一本书的划线**——错数据，不是样式问题。
+ */
+const delays = new Map();
+async function fakeFetch(url, opts) {
   requested.push(url);
+  allRequested.push(url);
   const method = String(url).split('/').pop();
+  // 把请求体也解析出来：/bookmarks 要按 bookId 返回不同内容才能测竞态
+  let body = {};
+  try { body = JSON.parse(opts?.body ?? '{}') ?? {}; } catch { body = {}; }
   if (pendingHolds.has(method)) {
     // 永不 resolve，让 busy 一直保持 true
     await new Promise(() => {});
   }
-  if (onceFailures.has(method)) {
-    const body = onceFailures.get(method);
-    onceFailures.delete(method);
-    return { ok: true, status: 200, json: async () => body };
+  if (delays.has(method)) {
+    const queue = delays.get(method);
+    const ms = queue.length ? queue.shift() : 0;
+    if (ms > 0) await new Promise((r) => setTimeout(r, ms));
   }
-  const body = responses[method] ?? { ok: false, error: 'unknown method ' + method };
-  return { ok: true, status: 200, json: async () => body };
+  if (onceFailures.has(method)) {
+    const failBody = onceFailures.get(method);
+    onceFailures.delete(method);
+    return { ok: true, status: 200, json: async () => failBody };
+  }
+  const raw = responses[method];
+  const payload = typeof raw === 'function'
+    ? raw(body)
+    : (raw ?? { ok: false, error: 'unknown method ' + method });
+  return { ok: true, status: 200, json: async () => payload };
 }
 
 // ---------- 执行 client.js ----------
@@ -300,7 +345,7 @@ function collectClasses(node, acc = []) {
 
 /** 渲染一次组件，返回原始元素树（hook 槽位里的 current 在内部置好）。 */
 function renderTree(comp, props = {}, runEffects = true) {
-  const store = stores.get(comp) ?? { state: [], effects: [], pending: [], cursor: 0 };
+  const store = stores.get(comp) ?? { state: [], effects: [], pending: [], refs: [], cursor: 0 };
   stores.set(comp, store);
   const outer = current;
   store.cursor = 0;
@@ -453,11 +498,29 @@ function mountDeep(node, depth = 0) {
 }
 
 /** 点一下元素树里文字匹配的按钮，然后整树重挂让 setState 与 effect 生效。 */
-function clickButton(comp, props, label) {
+function clickButton(comp, props, label, opts = {}) {
   const tree = renderTree(comp, props);
+  const want = opts.exact ? (t) => t.trim() === label : (t) => t.includes(label);
   const btn = findNode(tree, (n) => n.type === 'button'
-    && flattenText(n).includes(label) && typeof n.props?.onClick === 'function');
+    && want(flattenText(n)) && typeof n.props?.onClick === 'function');
   assert.ok(btn, `没找到按钮「${label}」`);
+  btn.props.onClick();
+  mountDeep(renderTree(comp, props));
+  return true;
+}
+/**
+ * 在指定卡片（.wr-section，按标题文字定位）里点按钮。
+ * 画像卡和笔记卡都有一个叫「刷新」的按钮，全局按文字找会点错卡片。
+ */
+function clickInSection(comp, props, sectionTitle, label) {
+  const tree = renderTree(comp, props);
+  const section = findNode(tree, (n) => typeof n.props?.className === 'string'
+    && n.props.className.includes('wr-section')
+    && flattenText(n).includes(sectionTitle));
+  assert.ok(section, `没找到卡片「${sectionTitle}」`);
+  const btn = findNode(section, (n) => n.type === 'button'
+    && flattenText(n).includes(label) && typeof n.props?.onClick === 'function');
+  assert.ok(btn, `卡片「${sectionTitle}」里没找到按钮「${label}」`);
   btn.props.onClick();
   mountDeep(renderTree(comp, props));
   return true;
@@ -941,7 +1004,7 @@ function collectCells(node, acc = []) {
   assert.ok(requested.some((u) => u.endsWith('/notebooks')), '点了按钮应请求 /notebooks');
   const nTxt = flattenText(renderTree(panelComp));
   assert.ok(nTxt.includes('笔记与划线'), '笔记卡标题应出现，实际: ' + nTxt.slice(0, 200));
-  assert.ok(nTxt.includes('来自 2 本书'), '应显示来源书籍数，实际: ' + nTxt.slice(0, 300));
+  assert.ok(nTxt.includes('来自 3 本书'), '应显示来源书籍数，实际: ' + nTxt.slice(0, 300));
   assert.ok(nTxt.includes('活着') && nTxt.includes('囚徒健身'), '应列出两本书');
 
   // 展不开的时候不该提前拉任何一本书的划线
@@ -983,5 +1046,115 @@ function collectCells(node, acc = []) {
   console.log('✓ 新卡片样式齐全');
 }
 
-console.log('\n请求过的接口:', [...new Set(requested.map((u) => u.split('/').pop()))].join(', '));
+// 16) v1.2.1：在途锁 —— 刷新不能连点叠请求；换书竞态不能张冠李戴
+{
+  /*
+   * 三条断言，对应三个真实缺陷：
+   *   a. 画像卡连点两下「刷新」→ 只该发一次 /profile
+   *   b. 笔记卡连点两下「刷新」→ 只该发一次 /notebooks
+   *   c. 点 A 还没回来就点 B → B 的展开区必须显示 B 的划线，A 的后到响应要丢弃
+   */
+  const count = (m) => requested.filter((u) => u.endsWith('/' + m)).length;
+
+  // —— a. 画像卡连点 ——
+  // 先让 /profile 挂住，这样按钮第一次点完仍处于「在途」
+  requested.length = 0;
+  pendingHolds.add('profile');
+  clickInSection(panelComp, {}, '阅读画像', '刷新');
+  clickInSection(panelComp, {}, '阅读画像', '刷新中…');
+  await settle(panelComp, {}, 3);
+  pendingHolds.delete('profile');
+  /*
+   * pendingHolds 的请求永不 resolve，第一次点击的 promise 会永远挂着；
+   * 但 busyRef 已经在调用前就置位，所以第二次点击必须在发请求之前就被拦下。
+   */
+  assert.strictEqual(count('profile'), 1, `画像卡连点刷新只该发 1 次请求，实际 ${count('profile')} 次`);
+  console.log('✓ 画像卡刷新在途锁 → 连点只发 1 次 /profile');
+
+  // —— b. 笔记卡连点 ——
+  requested.length = 0;
+  pendingHolds.add('notebooks');
+  clickInSection(panelComp, {}, '笔记与划线', '刷新');
+  clickInSection(panelComp, {}, '笔记与划线', '刷新中…');
+  await settle(panelComp, {}, 3);
+  pendingHolds.delete('notebooks');
+  assert.strictEqual(count('notebooks'), 1, `笔记卡连点刷新只该发 1 次请求，实际 ${count('notebooks')} 次`);
+  console.log('✓ 笔记卡刷新在途锁 → 连点只发 1 次 /notebooks');
+
+  /*
+   * —— c. 换书竞态 ——
+   * 让 A（看不见的城市）慢 120ms 回来，B（活着）立刻回来：
+   * 没有 wantRef 守卫时，A 的响应会在 B 之后落地，把 B 的展开区写成 A 的划线。
+   */
+  requested.length = 0;
+  await settle(panelComp, {}, 4);
+  delays.set('bookmarks', [120, 0]);
+  clickButton(panelComp, {}, '看不见的城市');
+  clickButton(panelComp, {}, '活着');
+  await new Promise((r) => setTimeout(r, 200)); // 等 A 的延迟响应也落地
+  await settle(panelComp, {}, 4);
+
+  const raceTxt = flattenText(renderTree(panelComp));
+  assert.ok(
+    raceTxt.includes('我知道黄昏正在转瞬即逝'),
+    '最后点的是「活着」，展开区该是《活着》的划线，实际: ' + raceTxt.slice(0, 400),
+  );
+  assert.ok(
+    !raceTxt.includes('地狱里的城市总是这样'),
+    '《看不见的城市》的后到响应必须被丢弃，不能覆盖《活着》的划线区',
+  );
+  delays.delete('bookmarks');
+  console.log('✓ 换书竞态 → 后到的旧响应被丢弃，展开区显示最后点的那本');
+
+  // 竞态过后展开/收起仍正常：再点一次「活着」应收起，划线消失
+  clickButton(panelComp, {}, '活着');
+  await settle(panelComp, {}, 3);
+  const collapsed = flattenText(renderTree(panelComp));
+  assert.ok(!collapsed.includes('我知道黄昏正在转瞬即逝'), '再点同一本应收起，划线不该还在');
+  console.log('✓ 再次点击同一本 → 正常收起');
+}
+
+// 17) v1.2.1：设置页「刷新密钥」在途锁
+{
+  const count = (m) => requested.filter((u) => u.endsWith('/' + m)).length;
+  // renew 挂住不返回，此时按钮必须立刻变「刷新中…」且禁用；连点也只发一次
+  requested.length = 0;
+  await settle(settingsComp, {}, 3);
+  pendingHolds.add('renew');
+  clickButton(settingsComp, {}, '刷新密钥', { exact: true });
+  await settle(settingsComp, {}, 2);
+
+  const mid = renderTree(settingsComp);
+  const hit = findNode(mid, (n) => n.type === 'button'
+    && flattenText(n).includes('刷新中'));
+  assert.ok(hit, '点刷新后按钮应立刻显示「刷新中…」');
+  assert.ok(hit.props.disabled === true, '刷新中按钮必须 disabled，挡住连点');
+  console.log('✓ 刷新密钥 → 在途时按钮置灰并显示「刷新中…」');
+
+  clickButton(settingsComp, {}, '刷新中…');
+  await settle(settingsComp, {}, 2);
+  assert.strictEqual(count('renew'), 1, `刷新密钥连点只该发 1 次请求，实际 ${count('renew')} 次`);
+  pendingHolds.delete('renew');
+  console.log('✓ 刷新密钥在途锁 → 连点只发 1 次 /renew');
+}
+
+// 18) v1.2.1：probe 模拟器的 useRef 必须跨渲染保留（否则 ref 锁测不出来）
+{
+  // 这是一个自检断言：把 useRef 指向的对象改了，重新渲染后必须看到改后的值
+  let seen = '';
+  function RefProbe() {
+    const r = React.useRef('init');
+    seen = r.current;
+    r.current = 'changed';
+    return React.createElement('div', null, seen);
+  }
+  renderTree(RefProbe, {}, false);
+  assert.strictEqual(seen, 'init', '首次渲染该看到初值');
+  renderTree(RefProbe, {}, false);
+  assert.strictEqual(seen, 'changed',
+    'useRef 没跨渲染保留对象 —— 模拟器把 ref 每次重置了，ref 锁类断言会假阴性');
+  console.log('✓ 模拟器 useRef 跨渲染保留（ref 锁断言可信）');
+}
+
+console.log('\n请求过的接口:', [...new Set(allRequested.map((u) => u.split('/').pop()))].join(', '));
 console.log('全部通过 ✅');

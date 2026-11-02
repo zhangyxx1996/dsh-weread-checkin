@@ -142,25 +142,93 @@ probe 里显式断言：进界面时 `requested` 里不得出现 `/profile`、`/
 
 ---
 
+## v1.2.1 — 2026-11-02（第 3 轮）
+
+本轮主题：**异步请求的在途竞态**。三处都在 `client.js`，全是「连点 / 换书」造成的错数据与重复请求。
+
+### 1. 画像卡、笔记卡的「刷新」没有在途锁（功能 BUG）
+
+`load` 里用 `if (loading) return;` 挡连点——**挡不住**。`loading` 是 state，要等重渲染才更新；
+同一个渲染周期里连点两下，两次闭包里的 `loading` 都还是 `false`，于是两次请求都发出去。
+`/profile` 是一次 overall 统计，`/notebooks` 是游标分页最多 5 页，连点等于成倍放大开销；
+更糟的是后到的旧响应会盖掉先到的新数据。
+
+改用 `const busyRef = React.useRef(false)`：ref 是同步可见的，置位立刻生效。
+`useCallback` 的依赖数组也回到 `[]`（原来依赖 `loading`，每轮都重建回调，等于没有 memo）。
+
+### 2. 笔记卡换书竞态 → 展开区显示「另一本书」的划线（功能 BUG，最严重）
+
+点开《看不见的城市》还没返回，又点了《活着》：前者响应后到时 `setMarks(res)` 照样执行，
+把 A 书的划线写进 B 书的展开区——**用户看到的是张冠李戴的错数据**；A 的
+`finally` 还会 `setMarkLoading(false)`，提前结束 B 的「正在读取…」。
+
+加 `const wantRef = React.useRef('')`：点开时先写 `wantRef.current = bookId`，
+`.then/.catch/.finally` 三处都先判 `if (wantRef.current !== bookId) return;`，后到的旧响应直接丢弃。
+
+### 3. 设置页「刷新密钥」无在途态（功能 BUG）
+
+连点会并发多个 `/renew`，每个都会改一次 `wr_skey`，后到的可能覆盖先到的凭据。
+补 `renewing` state + `renewingRef` 双保险：state 负责 UI（按钮变「刷新中…」并 `disabled`），
+ref 负责拦截同一 tick 内的连点（`disabled` 也要等重渲染才生效）。
+
+### 4. probe 模拟器自身的缺陷（测试基建）
+
+写第 1 条的断言时发现 `makeReact` 里的 `useRef(v) { current.cursor++; return { current: v }; }`
+**每次渲染都新建对象**，ref 在模拟器里永远是初值。也就是说：任何用 ref 做的锁、序号、
+防抖，在 probe 里都测不出来，测出来的是模拟器的 bug。
+
+修法是给 store 加独立 `refs` 槽位，按 hook 序号缓存：
+
+```js
+useRef(v) {
+  const s = current;
+  const i = s.cursor++;
+  if (!Object.prototype.hasOwnProperty.call(s.refs, i)) s.refs[i] = { current: v };
+  return s.refs[i];
+}
+```
+
+并新增一条**自检断言**：组件里 `r.current = 'changed'`，第二次渲染必须读到 `'changed'`。
+这条断言本身绿了，上面三条 ref 锁的断言才可信。这是个容易反复踩的坑，写进这里备查。
+
+### 回归断言（`probe-client-run.mjs` 新增第 16–18 节）
+
+- 画像卡：`pendingHolds.add('profile')` 挂住请求后连点两次「刷新」→ `/profile` 计数必须为 **1**
+- 笔记卡同理 → `/notebooks` 计数必须为 **1**
+- 换书竞态：`delays.set('bookmarks', [120, 0])`，先点《看不见的城市》再点《活着》，
+  等 200ms 后展开区必须是《活着》的原文，且**不得出现**《看不见的城市》的句子
+- 竞态后功能不退化：再点同一本必须正常收起
+- 刷新密钥：在途时按钮 `disabled === true` 且文案为「刷新中…」；连点只发 1 次 `/renew`
+- 模拟器自检：`useRef` 必须跨渲染保留
+
+一个顺带修的坑：`clickButton` 原来按文字全局找按钮，而画像卡和笔记卡**都有叫「刷新」的按钮**，
+点错卡片会让断言假通过。新增 `clickInSection(comp, props, 卡片标题, 按钮文字)` 限定在
+`.wr-section` 内查找；`clickButton` 也支持 `{ exact: true }`（「刷新」是「刷新中…」的子串）。
+汇总行的「请求过的接口」改为读全量 `allRequested`，否则会被各小节的 `requested.length = 0` 清空。
+
+四个探针全部 exit=0；`probe-host.mjs` 用真实 Key 跑通（画像 116.2h / 峰值 23 点 / 73 位作者 /
+10 枚勋章；笔记本 7 本 23 条两口径一致；划线带章节与时间倒序）。
+
+---
+
 ## 待办（下一轮候选）
 
-按优先级排，下轮从上面挑，不要重复 v1.1.9 已做的：
+按优先级排，下轮从上面挑，不要重复已做的：
 
-1. **设置页「刷新密钥」按钮没有 busy 态、没有二次确认**（`client.js` 的 Settings 组件）。
-   点完没有任何反馈，用户会以为没点到而连点；连续触发 `/renew` 会重复请求续期接口。
-2. **日历月视图合计用 `fmtDuration`**，几十小时会显示成「41.2 小时」这种带小数的形式，
+1. **日历月视图合计用 `fmtDuration`**，几十小时会显示成「41.2 小时」这种带小数的形式，
    而周视图同样位置显示的是「N 天达标 · 合计 X 小时 Y 分钟」——两种视图的合计口径不统一。
-3. **书架「时长覆盖 N/M 本」**：M 取的是书架总数，但时长只可能来自「读得最多」榜，
+2. **书架「时长覆盖 N/M 本」**：M 取的是书架总数，但时长只可能来自「读得最多」榜，
    分母其实是无法达到的，文案容易让人误以为覆盖率低是自己没读完。
-4. 面板在打卡进行中每 30 秒轮询 `status`，但**不轮询 `dashboard`**（`RUN_POLL_MS` 只调
+3. 面板在打卡进行中每 30 秒轮询 `status`，但**不轮询 `dashboard`**（`RUN_POLL_MS` 只调
    `refreshRuntime`）。今日时长靠 `todaySec + done * 30` 估算，实际落库值要等到收尾才刷新。
-5. `probe-client-run.mjs` 的假数据里 `status.today` 是日期字符串、`dashboard.today` 是对象，
+4. `probe-client-run.mjs` 的假数据里 `status.today` 是日期字符串、`dashboard.today` 是对象，
    两者同名不同型——这正是 v1.1.8 那个「今日时长归零」bug 的现场，值得在 probe 里
    单独加一条断言固定住（目前是被动覆盖到，没有显式断言）。
-6. **笔记卡还没有「想法」内容**。`/review/list/mine` 是唯一能读到想法/点评正文的接口，
+5. **笔记卡还没有「想法」内容**。`/review/list/mine` 是唯一能读到想法/点评正文的接口，
    但本机账号 `totalCount=0`，真机无法自测；要做得先能造出测试数据，或只做只读展示并
    在空态上说清楚。
-7. **阅读画像卡可以再挖 `preferTimeWord` 之外的字段**：`readLongest` 的前 10 名、
+6. **阅读画像卡可以再挖 `preferTimeWord` 之外的字段**：`readLongest` 的前 10 名、
    `preferPublisher`、`registTime`（注册天数）都能直接展示，目前只用了分类/作者/勋章/时段。
-8. **热门划线**（`/book/bestbookmarks`，每本书固定 20 条 + 多少人划过）已经实测可用，
+7. **热门划线**（`/book/bestbookmarks`，每本书固定 20 条 + 多少人划过）已经实测可用，
    可以接进笔记卡作为「这本书大家都在划什么」，是个明显有内容吸引力的维度。
+

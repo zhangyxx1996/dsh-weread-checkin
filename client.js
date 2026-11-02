@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.2.0';
+    const PLUGIN_VERSION = '1.2.1';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -1355,7 +1355,14 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState('');
       const [allMedals, setAllMedals] = React.useState(false);
 
+      /*
+       * 在途锁用 ref 而不是 state：state 要等重渲染才更新，同一个渲染周期里
+       * 连点两下时闭包里的 loading 都还是 false，锁等于没有。ref 立即可见。
+       */
+      const busyRef = React.useRef(false);
       const load = React.useCallback(() => {
+        if (busyRef.current) return;
+        busyRef.current = true;
         setLoading(true);
         setError('');
         call('profile')
@@ -1364,7 +1371,7 @@ window.__ModuleLoader__.load({
             else setError(res?.reason || '读取阅读画像失败');
           })
           .catch((e) => setError(String(e?.message ?? e)))
-          .finally(() => setLoading(false));
+          .finally(() => { busyRef.current = false; setLoading(false); });
       }, []);
 
       const hours = data?.hours ?? [];
@@ -1478,7 +1485,11 @@ window.__ModuleLoader__.load({
       const [markErr, setMarkErr] = React.useState('');
       const [markLoading, setMarkLoading] = React.useState(false);
 
+      // 同 ProfileCard：ref 在途锁，连点刷新不会打出一串重复请求
+      const busyRef = React.useRef(false);
       const load = React.useCallback(() => {
+        if (busyRef.current) return;
+        busyRef.current = true;
         setLoading(true);
         setError('');
         call('notebooks')
@@ -1487,22 +1498,38 @@ window.__ModuleLoader__.load({
             else setError(res?.reason || '读取笔记失败');
           })
           .catch((e) => setError(String(e?.message ?? e)))
-          .finally(() => setLoading(false));
+          .finally(() => { busyRef.current = false; setLoading(false); });
       }, []);
 
+      /*
+       * 记住最后一次点的书。
+       *
+       * 没有它的话：点开 A 还在等响应，又点了 B，A 的响应回来时会把 marks 写成 A 的
+       * 划线，而界面此时展开的是 B —— 张冠李戴，还会把 B 的「正在读取」提前结束。
+       * 回包时只认最新那次请求，过期的直接丢弃。
+       */
+      const wantRef = React.useRef('');
       const toggle = React.useCallback((bookId) => {
-        if (openId === bookId) { setOpenId(''); return; }
+        if (openId === bookId) { wantRef.current = ''; setOpenId(''); return; }
+        wantRef.current = bookId;
         setOpenId(bookId);
         setMarks(null);
         setMarkErr('');
         setMarkLoading(true);
         call('bookmarks', { bookId })
           .then((res) => {
+            if (wantRef.current !== bookId) return;
             if (res?.ok) setMarks(res);
             else setMarkErr(res?.reason || '读取划线失败');
           })
-          .catch((e) => setMarkErr(String(e?.message ?? e)))
-          .finally(() => setMarkLoading(false));
+          .catch((e) => {
+            if (wantRef.current !== bookId) return;
+            setMarkErr(String(e?.message ?? e));
+          })
+          .finally(() => {
+            if (wantRef.current !== bookId) return;
+            setMarkLoading(false);
+          });
       }, [openId]);
 
       const books = data?.books ?? [];
@@ -1823,6 +1850,7 @@ window.__ModuleLoader__.load({
       const [baseText, setBaseText] = React.useState('');
       const [apiKeyText, setApiKeyText] = React.useState('');
       const [busy, setBusy] = React.useState(false);
+      const [renewing, setRenewing] = React.useState(false);
       const [notice, setNotice] = React.useState(null);
       const [status, setStatus] = React.useState(null);
 
@@ -1865,6 +1893,30 @@ window.__ModuleLoader__.load({
       const hasBase = Boolean(status?.hasBase);
       const canVerify = Boolean(status?.canVerify);
 
+      /*
+       * 刷新密钥：真打一次上报探测，成功才说明登录态还能用。
+       *
+       * 早先这个按钮既没有在途态也没有禁用，连点几下就会并发发出多个
+       * /renew —— 每个都会改 wr_skey，后到的可能把先到刚写好的凭据覆盖掉。
+       * 现在用 renewing 置灰，并在成功/失败后都回写一次 status。
+       */
+      const renewingRef = React.useRef(false);
+      const renew = React.useCallback(() => {
+        // ref 判定：disabled 属性要等重渲染才生效，同一个 tick 内连点仍会并发
+        if (renewingRef.current) return;
+        renewingRef.current = true;
+        setRenewing(true);
+        setNotice(null);
+        call('renew', {})
+          .then((r) => {
+            setNotice(r?.ok
+              ? { kind: 'ok', text: r.message || '密钥刷新成功' }
+              : { kind: 'err', text: r?.reason || '刷新失败，登录态可能已失效，需要重新粘贴 Cookie' });
+          })
+          .catch((e) => setNotice({ kind: 'err', text: String(e?.message ?? e) }))
+          .finally(() => { renewingRef.current = false; setRenewing(false); refresh(); });
+      }, [refresh]);
+
       return h('div', { className: 'wr-page wr-page-flat' },
         h('div', { className: 'wr-inner wr-inner-sm' },
         // 连接状态
@@ -1895,12 +1947,10 @@ window.__ModuleLoader__.load({
             h('span', null, '凭据'),
             h('button', {
               type: 'button', className: 'wr-btn-ghost wr-btn-sm',
-              onClick: () => call('renew', {})
-                .then((r) => setNotice(r.ok
-                  ? { kind: 'ok', text: '密钥刷新成功' }
-                  : { kind: 'err', text: r.reason || '刷新失败' }))
-                .catch((e) => setNotice({ kind: 'err', text: String(e?.message ?? e) })),
-            }, '刷新密钥')),
+              // 刷新要打一次真实的上报探测，连点会叠出多次请求；置灰防抖
+              disabled: renewing || !hasCookie,
+              onClick: renew,
+            }, renewing ? '刷新中…' : '刷新密钥')),
           h('div', { className: 'wr-group' },
             h('div', { className: 'wr-field' },
               h('label', { className: 'wr-label', htmlFor: 'wr-cookie' },
