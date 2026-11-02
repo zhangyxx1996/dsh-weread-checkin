@@ -47,6 +47,10 @@
 
 > 缺点：zip 是某个版本的定版快照，没有 git 历史。以后想看改了什么、或者想回滚，
 > 只能重新下另一个版本的 zip。
+>
+> 想拿**当前最新代码**而不是定版，把上面链接里的 `tags/v1.1.6` 换成 `heads/main` 即可：
+> `https://codeload.github.com/zhangyxx1996/dsh-weread-checkin/zip/refs/heads/main`
+> （下载的文件名会变成 `dsh-weread-checkin-main.zip`）。想更新时重新下一遍、解压覆盖原目录即可。
 
 #### 做法 B：用 git clone（能持续更新）
 
