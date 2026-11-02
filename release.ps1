@@ -16,9 +16,70 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$Git  = 'C:\Users\zhang\.workbuddy\vendor\PortableGit\cmd\git.exe'
-$Node = 'C:\Users\zhang\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe'
 $Repo = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# ---------------------------------------------------------------------------
+# 定位 git / node / pnpm（换机器时这一段不用改）
+#
+# 顺序：先看 PATH，再翻 DSH 桌面端自带的 runtime
+#   <用户>\.dsh\dsh-runtimes\<runtime>\dependencies\{node,pnpm}
+# 最后才回落到本机旧路径。本机 git 和 node 都不在 PATH 上，
+# 所以 PATH 通常落空，实际靠 runtime 目录兜住。
+# ---------------------------------------------------------------------------
+function Find-Tool {
+  param([string]$Name, [string[]]$Fallbacks = @())
+  $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+  foreach ($f in $Fallbacks) {
+    if ($f -and (Test-Path $f)) { return $f }
+  }
+  return $null
+}
+
+# 收集所有 DSH runtime 下的 node.exe / pnpm.mjs 候选
+$NodeCandidates = @()
+$PnpmCandidates = @()
+$RuntimeBases = @()
+if ($env:USERPROFILE) { $RuntimeBases += (Join-Path $env:USERPROFILE '.dsh\dsh-runtimes') }
+if ($env:DSH_HOME)    { $RuntimeBases += (Join-Path $env:DSH_HOME 'dsh-runtimes') }
+foreach ($base in ($RuntimeBases | Select-Object -Unique)) {
+  if (-not (Test-Path $base)) { continue }
+  foreach ($rt in (Get-ChildItem $base -Directory -ErrorAction SilentlyContinue)) {
+    $NodeCandidates += (Join-Path $rt.FullName 'dependencies\node\bin\node.exe')
+    $PnpmCandidates += (Join-Path $rt.FullName 'dependencies\pnpm\bin\pnpm.mjs')
+  }
+}
+
+$Git = Find-Tool 'git' @(
+  (Join-Path $env:ProgramFiles 'Git\cmd\git.exe'),
+  (Join-Path ${env:ProgramFiles(x86)} 'Git\cmd\git.exe'),
+  (Join-Path $env:LOCALAPPDATA 'Programs\Git\cmd\git.exe'),
+  # WorkBuddy 随附的 PortableGit（本机 git 就靠它，不在 PATH 上）
+  (Join-Path $env:USERPROFILE '.workbuddy\vendor\PortableGit\cmd\git.exe')
+)
+$Node = Find-Tool 'node' $NodeCandidates
+
+if (-not $Git)  { throw '找不到 git：装进 PATH，或改本脚本顶部的 $Git 回落列表' }
+if (-not $Node) { throw '找不到 node：装 Node 20+，或在 DSH 桌面端里启动过一次（会下发 runtime）' }
+
+# pnpm：先从 node 的同级目录反推（DSH runtime 是 dependencies\{node,pnpm} 并排）
+$PnpmJs = $null
+$DepsDir = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $Node))
+$GuessPnpm = Join-Path $DepsDir 'pnpm\bin\pnpm.mjs'
+if (Test-Path $GuessPnpm) {
+  $PnpmJs = $GuessPnpm
+} else {
+  foreach ($c in $PnpmCandidates) { if (Test-Path $c) { $PnpmJs = $c; break } }
+}
+
+Write-Host "git  = $Git"
+Write-Host "node = $Node"
+if ($PnpmJs) {
+  Write-Host "pnpm = $PnpmJs"
+} else {
+  Write-Host "pnpm = (未找到，装机步骤会跳过)" -ForegroundColor Yellow
+}
+Write-Host ""
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
   throw "版本号格式应为 X.Y.Z，收到：$Version"
@@ -44,24 +105,27 @@ try {
 }
 
 Write-Host "=== 3/6 写入版本号 $Version ===" -ForegroundColor Cyan
-& $Node -e @"
-const fs = require('fs');
-const dir = String.raw``$Repo``;
-// package.json
-const pj = dir + '\\package.json';
-const j = JSON.parse(fs.readFileSync(pj, 'utf8'));
-j.version = '$Version';
-fs.writeFileSync(pj, JSON.stringify(j, null, 2) + '\n');
-// client.js 的兜底常量
-const cj = dir + '\\client.js';
-let s = fs.readFileSync(cj, 'utf8');
-const before = s;
-s = s.replace(/const PLUGIN_VERSION = '[^']*';/, "const PLUGIN_VERSION = '$Version';");
-if (s === before) { console.error('未能替换 client.js 的 PLUGIN_VERSION'); process.exit(1); }
-fs.writeFileSync(cj, s);
-console.log('  version =', j.version);
-"@
-if ($LASTEXITCODE -ne 0) { throw '写入版本号失败' }
+# 用 PowerShell 直接改文件，不走 node -e：
+#   PowerShell 5.1 把多行 here-string 当参数传给原生 exe 时，
+#   里面的双引号会被吞掉（node 收到 `/, const PLUGIN_VERSION = ...` 而报 SyntaxError）。
+# 这里保持各文件原有编码（有无 BOM）不变，避免把 BOM 写进去或写掉。
+function Set-VersionInFile {
+  param([string]$Path, [string]$Pattern, [string]$Replacement)
+  if (-not (Test-Path $Path)) { throw "找不到文件：$Path" }
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+  $text = [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false))
+  $new = [regex]::Replace($text, $Pattern, $Replacement)
+  if ($new -eq $text) { throw "未能替换 $Path 中的版本号（模式：$Pattern）" }
+  [System.IO.File]::WriteAllText($Path, $new, [System.Text.UTF8Encoding]::new($hasBom))
+}
+
+Set-VersionInFile (Join-Path $Repo 'package.json') '"version"\s*:\s*"[^"]*"' "`"version`": `"$Version`""
+Set-VersionInFile (Join-Path $Repo 'client.js') "const PLUGIN_VERSION = '[^']*';" "const PLUGIN_VERSION = '$Version';"
+
+$live = (Get-Content (Join-Path $Repo 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+if ($live -ne $Version) { throw "package.json 版本号写入失败（读到 $live）" }
+Write-Host "  package.json version = $live"
 
 Write-Host "=== 4/6 提交并打 tag ===" -ForegroundColor Cyan
 $msg = if ($Note) { "v${Version}: $Note" } else { "v${Version}" }
@@ -80,13 +144,14 @@ Write-Host "=== 6/6 装机 ===" -ForegroundColor Cyan
 # 因为安装方式是 Junction（软链），代码本身已经在目标位置，这一步主要是让 pnpm
 # 确认依赖树一致（改了 package.json 的依赖/版本时需要它），并把 package.json 里的
 # version 同步进 profile 的锁文件。
-$ProfileDir = Join-Path $env:USERPROFILE '.dsh\profiles\desktop'
-$PnpmJs = 'C:\Users\zhang\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pnpm\bin\pnpm.mjs'
+# profile 目录：优先用 DSH 进程传下来的，其次 <用户>\.dsh\profiles\<profile>
+$ProfileName = if ($env:DSH_PROFILE) { $env:DSH_PROFILE } else { 'desktop' }
+$ProfileDir = if ($env:DSH_PROFILE_DIR) { $env:DSH_PROFILE_DIR } else { Join-Path $env:USERPROFILE ".dsh\profiles\$ProfileName" }
 
 if (-not (Test-Path $ProfileDir)) {
   Write-Host "  找不到 profile 目录，跳过自动装机：$ProfileDir" -ForegroundColor Yellow
-} elseif (-not (Test-Path $PnpmJs)) {
-  Write-Host "  找不到 pnpm，跳过自动装机：$PnpmJs" -ForegroundColor Yellow
+} elseif (-not $PnpmJs -or -not (Test-Path $PnpmJs)) {
+  Write-Host "  找不到 pnpm，跳过自动装机（不影响代码与 tag）" -ForegroundColor Yellow
 } else {
   # pnpm 需要 node 在 PATH 上
   $NodeDir = Split-Path -Parent $Node
@@ -119,9 +184,14 @@ if (-not (Test-Path $ProfileDir)) {
   }
 }
 
-$live = Get-Content (Join-Path $Repo 'package.json') -Raw | ConvertFrom-Json
+# 读回来的确认输出，失败不影响发版结果（此时 commit/tag/push 都已经做完了）
+try {
+  $live = (Get-Content (Join-Path $Repo 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+} catch {
+  $live = $Version
+}
 Write-Host ""
-Write-Host "完成：v$Version（package.json 记为 $($live.version)）" -ForegroundColor Green
+Write-Host "完成：v$Version（package.json 记为 $live）" -ForegroundColor Green
 Write-Host "GitHub: https://github.com/zhangyxx1996/dsh-weread-checkin/releases/tag/v$Version"
 Write-Host ""
 Write-Host "最后一步：DSH 需要重新加载插件才会用上新代码。" -ForegroundColor Yellow

@@ -6,11 +6,19 @@
 ## 一条命令发版
 
 ```powershell
-cd D:\DSH工作区\微信读书插件
+cd <仓库目录>
 .\release.ps1 -Version 1.0.2 -Note "修了什么"
 ```
 
-它会自动完成：语法校验 → 跑回归测试 → 同步改两处版本号 → 提交 → 打 tag → 推送。
+它会自动完成：语法校验 → 跑回归测试 → 同步改两处版本号 → 提交 → 打 tag → 推送 → 同步 profile 依赖。
+
+脚本开头会**自动定位 git / node / pnpm**（先 PATH，再翻 `~\.dsh\dsh-runtimes\*\dependencies\`），
+profile 目录优先读 `DSH_PROFILE_DIR` / `DSH_PROFILE` 环境变量，
+所以**换机器、换目录、换用户名都不用改脚本**。跑之前它会先打印三行实际用到的路径，
+不对就直接 `throw` 退出，不会带着错的工具去提交。
+
+> 若本机 PowerShell 执行策略禁止运行脚本，用下面这条绕过（只对本次生效）：
+> `powershell -NoProfile -ExecutionPolicy Bypass -File .\release.ps1 -Version 1.0.2 -Note "..."`
 
 推送之后回到 DSH 里说「装一下新版本」，用 `plugin_manager` 重新安装即可。
 
@@ -33,28 +41,39 @@ cd D:\DSH工作区\微信读书插件
 ## 手动发版（不想用脚本时）
 
 ```powershell
-$git = 'C:\Users\zhang\.workbuddy\vendor\PortableGit\cmd\git.exe'
-$node = 'C:\Users\zhang\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe'
-
 # 0. 先进到仓库目录（所有命令都相对于它）
-cd D:\DSH工作区\微信读书插件
+cd <仓库目录>
 
-# 1. 改完代码、跑完回归测试
+# 1. 定位工具：脚本里会自动找，手动跑就用 PATH 上的，找不到再翻 DSH runtime
+$node = (Get-Command node -ErrorAction SilentlyContinue).Source
+if (-not $node) {
+  $node = Get-ChildItem "$env:USERPROFILE\.dsh\dsh-runtimes\*\dependencies\node\bin\node.exe" |
+    Select-Object -First 1 -ExpandProperty FullName
+}
+$git = (Get-Command git -ErrorAction SilentlyContinue).Source
+
+# 2. 改完代码、跑完回归测试
 & $node --check client.js
 & $node probe-client-run.mjs      # 离线渲染
 & $node probe-host.mjs            # Host 接口
 & $node probe-layout-fix.mjs      # 布局约束
 
-# 2. 先提交并打 tag（在装机之前！）
+# 3. 先提交并打 tag（在装机之前！）
 & $git add -A
 & $git commit -m "v1.0.2: 说明改了什么"
 & $git tag -a v1.0.2 -m "一句话说明"
 
-# 3. 改 package.json 和 client.js 的 PLUGIN_VERSION，再装机
+# 4. 改 package.json 和 client.js 的 PLUGIN_VERSION，再装机
 #    plugin_manager remove_bundle → install_bundle
 ```
 
 **顺序很重要**：先 tag 再装机。装机前要是忘了 tag，这一版的源码又只剩工作区里那一份。
+
+> `probe-host.mjs` 会依次调用 `setupAuto` / `setupMinutes` / `setupGoal` 做参数校验，
+> 每次成功都落盘。它**用的是 `%TEMP%` 下的临时状态文件**，跑完即删，
+> 不会碰你真实的 `~/.dsh/weread-state.json`——否则跑一次回归就会把自动打卡时间
+> 和时长档位全部改成测试值。
+
 
 ## 回滚到某个版本
 
@@ -84,10 +103,15 @@ cd D:\DSH工作区\微信读书插件
 
 ## 注意
 
-- **源码目录名 ≠ 包名**：目录是 `D:\DSH工作区\微信读书插件`（2026-11-01 从
-  `D:\DSH工作区\dsh-weread-checkin` 迁来），包名仍是 `dsh-weread-checkin`。
+- **源码目录名 ≠ 包名**：目录是任意路径（作者本机是 `D:\DSH工作区\微信读书插件`，2026-11-01
+  从 `dsh-weread-checkin` 迁来），包名仍是 `dsh-weread-checkin`。
   `package.json` / `cordis.patch.yml` / `client.js` / `index.js` / `release.ps1`
   里的 `dsh-weread-checkin` 是**包标识、Junction 名和 GitHub 仓库名**，改目录时不能跟着改。
+- **所有脚本都按 `$PSScriptRoot` / `import.meta.url` 定位，不写死绝对路径**，
+  换机器换目录不用改代码；新增代码请沿用这个约定。
+- **`release.ps1` 必须存成 UTF-8 with BOM**。PowerShell 5.1 会用 ANSI 解码无 BOM 的 UTF-8，
+  中文字符串（含报错文案）会变成乱码并引发成片 ParserError。用编辑器改完检查一下：
+  `[System.IO.File]::ReadAllBytes('release.ps1')[0..2]` 应为 `239,187,191`。
 - 仓库身份是仓库内局部配置（`DSH Agent <agent@dsh.local>`），没有改全局 git 配置。
 - `core.autocrlf = false`，避免 Windows 换行符污染 diff。
 - 推送凭据用本仓库的 `url.insteadOf`（含 token），**只在本仓库生效**。

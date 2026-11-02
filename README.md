@@ -5,26 +5,77 @@
 
 在 [DeepSeek Harness](https://github.com/deepseek-ai) 里完成微信读书每日打卡：手动一键、每天定时、或让 AI 代劳。
 
-当前版本 **v1.1.4**（版本号会自动显示在插件面板底部与设置页「关于」里）。
+当前版本 **v1.1.6**（版本号会自动显示在插件面板底部与设置页「关于」里）。
 
 > **只需要一次 Cookie，不需要抓包。** 上报模板有内置兜底，粘一次 Cookie 就能用。
 
 ## 安装
 
-```powershell
-# 1. 克隆到本地（目录名随意，本机用的是 D:\DSH工作区\微信读书插件）
-git clone https://github.com/zhangyxx1996/dsh-weread-checkin.git
+### 第一步：装好 DSH 桌面端
 
-# 2. 在 DSH 里安装（把路径换成你克隆到的目录）
-#    然后重启 DSH 桌面端
+本插件是 DSH 的 bundle，**不能单独运行**，先确认桌面端能正常打开。
+插件只要求 `node >= 20`，DSH 自带 runtime，不用另外装 Node。
+
+### 第二步：拿源码
+
+```powershell
+git clone https://github.com/zhangyxx1996/dsh-weread-checkin.git "D:\DSH工作区\微信读书插件"
 ```
 
-DSH 安装方式二选一：
+目录名随意，只影响你自己的路径习惯。没装 git 也可以直接下载 zip 解压：
 
-- **插件市场**：如果本插件已收录，直接在 DSH 的插件市场里搜索「微信读书」安装。
-- **本地安装**：把克隆下来的目录用 `plugin_manager install_bundle` 装进去，然后**重启 DSH**（插件改动必须重启才生效）。
+```
+https://codeload.github.com/zhangyxx1996/dsh-weread-checkin/zip/refs/tags/v1.1.6
+```
+
+### 第三步：装进 DSH
+
+打开 DSH，把这段交给 AI：
+
+> 把 `D:\DSH工作区\微信读书插件` 这个本地目录作为 bundle 装进当前 profile，然后提示我重启 DSH。
+
+等价于 `plugin_manager install_bundle`：它会在 profile 的 `package.json` 里加一条
+`link:<绝对路径>` 依赖，并写进 `dsh.profile.bundles`。之后 `profiles/<profile>/node_modules/dsh-weread-checkin`
+是一个指向源码目录的 **Junction（软链）**，不是副本。
+
+> **改代码后必须重启 DSH** 才会加载新版本。软链方式下不需要重装，但需要重启。
+
+### 第四步：配凭据（二选一）
+
+**方式 A：界面里重填**（推荐换机器时用）
+
+点左侧栏书本图标 → 右下角「设置」→ 粘贴 Cookie 与 API Key → 保存。
+
+**方式 B：拷旧机器的文件**（保留每日目标、打卡时长、自动打卡时间）
+
+```
+%USERPROFILE%\.dsh\weread-credentials.json     # Cookie + 请求体模板 + API Key
+%USERPROFILE%\.dsh\weread-state.json           # 自动打卡时间、时长档位、今日进度
+```
+
+这两个文件是**纯 JSON，没有做机器绑定加密**，可以直接拷。
+插件读取时先看 `DSH_PROFILE_DIR`（`~\.dsh\profiles\desktop`），再回退 `DSH_HOME`（`~\.dsh`），
+所以放在 `~\.dsh` 根下或 profile 目录下都能被识别；写入统一走 profile 目录。
+
+> 换机器后注意：两台都开「自动打卡」不会冲突（打卡是补差额、达标即停），
+> 但会各报一次时长。建议只在常用那台开。
 
 装好后左侧栏会出现一个书本图标，带三色状态点。
+
+## 迁移到另一台电脑
+
+上面的四步就是完整流程，另外两点值得提前知道：
+
+| 事项 | 说明 |
+|---|---|
+| 不需要 token | 仓库是公开的，`clone` / 下载 zip 都不用凭据。只有 `push` 要，用 `git config --global credential.helper manager` 单独存，**别把 token 写进 remote URL** |
+| 发版脚本可移植 | `release.ps1` 会自动定位 git / node / pnpm（先 PATH，再翻 `~\.dsh\dsh-runtimes\*`），profile 目录读 `DSH_PROFILE_DIR`，换机器换目录不用改 |
+
+想把**对话历史**也搬过去也可以：DSH 会话存在
+`~\.dsh\sessions\<工作区目录名>\<会话 id>\session.v4.jsonl.zstd`，
+目录名由工作区绝对路径生成（非 ASCII 字符 → `~` + 4 位大写十六进制码位，其余连续非字母数字折叠成一个 `-`，两端各加 `--`）。
+新机器如果工作区路径和旧机完全一致，把会话目录连同 `~\.dsh\storages\session_projcache\sessions\<会话 id>.json` 一起拷过去即可；
+路径不同则需按新路径重算目录名。**通常没必要搬**——版本的真相都在 git 里，新开一个会话读 README + `git log` 就能接上。
 
 ## 快速开始
 

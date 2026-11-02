@@ -6,10 +6,22 @@
  *
  * 用法：node probe-host.mjs
  */
-import { readFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const mod = await import('./index.js');
+
+/**
+ * 状态文件必须用临时文件，**不能指向真实的 ~/.dsh/weread-state.json**。
+ *
+ * 理由：下面会依次调用 setupAuto / setupMinutes / setupGoal 做校验，
+ * 每次成功都会 save() 落盘。如果指向真实文件，跑一次回归就会把用户
+ * 真实的「自动打卡时间（如 04:00）」「打卡时长 60」「每日目标 60」
+ * 全部改成脚本里的测试值（结尾只恢复成 10，不是原值），自动打卡直接失效。
+ */
+const stateFile = join(tmpdir(), `weread-probe-host-${process.pid}.json`);
 
 // 假的 ctx：把注册的东西收集起来
 const registered = {};
@@ -28,7 +40,7 @@ const ctx = {
   },
 };
 
-mod.apply(ctx, { stateFile: 'C:\\Users\\zhang\\.dsh\\weread-state.json' });
+mod.apply(ctx, { stateFile });
 await new Promise((r) => setTimeout(r, 300));
 
 console.log('inject =', mod.inject);
@@ -143,5 +155,8 @@ if (sh.ok) {
 
 console.log('\n=== status 的 progress 字段（v0.3.0 新增） ===');
 console.log(JSON.stringify((await invoke('status')).json.progress));
+
+// 清掉本次用过的临时状态文件，别在 %TEMP% 里留垃圾
+await rm(stateFile, { force: true }).catch(() => {});
 
 process.exit(0);
