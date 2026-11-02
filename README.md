@@ -16,17 +16,62 @@
 本插件是 DSH 的 bundle，**不能单独运行**，先确认桌面端能正常打开。
 插件只要求 `node >= 20`，DSH 自带 runtime，不用另外装 Node。
 
-### 第二步：拿源码
+### 第二步：把源码放到本机
+
+插件代码在 GitHub 上，DSH 只能装**本机目录**，所以先要在磁盘上有一份完整的源码。
+下面两种做法**选一种就行**，区别只在于以后能不能一键 `git pull` 更新。
+
+#### 做法 A：下载 zip（不用装任何东西，推荐新手）
+
+1. 在浏览器地址栏粘贴这一行，回车：
+
+   ```
+   https://codeload.github.com/zhangyxx1996/dsh-weread-checkin/zip/refs/tags/v1.1.6
+   ```
+
+   它会**直接开始下载**一个约 80 KB 的文件 `dsh-weread-checkin-1.1.6.zip`（不会跳转到别的页面）。
+
+2. 打开「下载」文件夹，右键这个 zip → **全部解压缩**（Windows 自带，不用装 WinRAR / 7-Zip）。
+
+3. 解压出来是一个名为 `dsh-weread-checkin-1.1.6` 的文件夹，里面应该能直接看到
+   `package.json`、`index.js`、`client.js` 这几个文件。
+   **如果打开后里面还套着一层同名文件夹，说明多套了一层，把里面那层拿出来用。**
+
+4. 把这个文件夹挪到你想长期放的地方，比如 `D:\DSH工作区\`，并**改成好记的名字**：
+
+   ```
+   D:\DSH工作区\微信读书插件\
+   ```
+
+   路径里有中文和空格都没问题。**关键是记住这个绝对路径**，第三步要用。
+
+> 缺点：zip 是某个版本的定版快照，没有 git 历史。以后想看改了什么、或者想回滚，
+> 只能重新下另一个版本的 zip。
+
+#### 做法 B：用 git clone（能持续更新）
+
+先确认装没装 git —— 打开 PowerShell 输入 `git --version`，能打印版本号才继续。
+**报「无法将 git 项识别为 cmdlet」就是没装**，去 https://git-scm.com/download/win 装一个（一路下一步即可），
+装完**关掉所有终端和 DSH 重开**，PATH 才会生效。
+
+然后：
 
 ```powershell
-git clone https://github.com/zhangyxx1996/dsh-weread-checkin.git "D:\DSH工作区\微信读书插件"
+# 1. 先建好父目录（不存在的话）
+New-Item -ItemType Directory -Path 'D:\DSH工作区' -Force
+
+# 2. 克隆。最后一个参数就是你想要的本地目录，不存在会自动创建
+git clone https://github.com/zhangyxx1996/dsh-weread-checkin.git 'D:\DSH工作区\微信读书插件'
+
+# 3. 确认拿到了
+Get-ChildItem 'D:\DSH工作区\微信读书插件' -Filter package.json
 ```
 
-目录名随意，只影响你自己的路径习惯。没装 git 也可以直接下载 zip 解压：
+看到 `package.json` 就成功了。以后想更新到最新版，在该目录里执行 `git pull` 即可。
 
-```
-https://codeload.github.com/zhangyxx1996/dsh-weread-checkin/zip/refs/tags/v1.1.6
-```
+> 本仓库是**公开**的，`clone` 不需要账号或 token。以后要往仓库推送才需要凭据，
+> 用 `git config --global credential.helper manager` 存一次即可，
+> **不要**把 token 拼进 URL（那会以明文留在 `.git/config` 里）。
 
 ### 第三步：装进 DSH
 
