@@ -11,7 +11,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { runReading, refreshSkey, probeAuth, DEFAULT_BASE } from './weread-api.js';
-import { resolveApiKey, readSnapshot, readDashboard, readHistory, readShelf, ymdLocal } from './weread-verify.js';
+import { resolveApiKey, readSnapshot, readDashboard, readHistory, readShelf, readProfile, readNotebooks, readBookmarks, ymdLocal } from './weread-verify.js';
 
 /** 每天检查一次是否到了自动打卡时间。 */
 const AUTO_TICK_MS = 60 * 1000;
@@ -627,6 +627,35 @@ export function apply(ctx, config = {}) {
     };
   }
 
+  /**
+   * 阅读画像（时段分布 / 偏好分类 / 常读作者 / 勋章）。
+   * 四个字段同源，一次接口就够；前端点开卡片时才请求。
+   */
+  async function profile() {
+    const apiKey = await apiKeyNow();
+    if (!apiKey) return { ok: false, reason: '未配置 WEREAD_API_KEY，无法读取阅读画像', needApiKey: true };
+    const data = await readProfile(apiKey).catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
+    return data;
+  }
+
+  /** 笔记本列表（每本书有多少条笔记），前端点开笔记卡时才请求。 */
+  async function notebooks() {
+    const apiKey = await apiKeyNow();
+    if (!apiKey) return { ok: false, reason: '未配置 WEREAD_API_KEY，无法读取笔记', needApiKey: true };
+    const data = await readNotebooks(apiKey).catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
+    return data;
+  }
+
+  /** 某一本书的划线原文（用户点开书名时才请求，别一次拉全书架）。 */
+  async function bookmarks(input) {
+    const apiKey = await apiKeyNow();
+    if (!apiKey) return { ok: false, reason: '未配置 WEREAD_API_KEY，无法读取划线', needApiKey: true };
+    const bookId = String(input?.bookId ?? '').trim();
+    if (!bookId) return { ok: false, reason: '缺少 bookId' };
+    const data = await readBookmarks(apiKey, bookId).catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
+    return data;
+  }
+
   /** 书架 + 每本书的阅读时长（用户点开书架卡时才请求）。 */
   async function shelf() {
     const apiKey = await apiKeyNow();
@@ -869,6 +898,7 @@ export function apply(ctx, config = {}) {
   const api = {
     checkin, stop, renew, status, setup, setupAuto, setupMinutes, setupGoal,
     today, dashboard, badge: badgeSafe, history, shelf,
+    profile, notebooks, bookmarks,
   };
   if (ctx.webServer) {
     ctx.effect(() => ctx.webServer.register({

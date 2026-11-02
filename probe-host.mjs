@@ -153,6 +153,67 @@ if (sh.ok) {
   console.log(JSON.stringify(sh));
 }
 
+console.log('\n=== profile 阅读画像（v1.2.0 新增） ===');
+const pf = (await invoke('profile')).json;
+if (pf.ok) {
+  /*
+   * 24 桶断言：服务端必须已把 preferTime 从「6 点起」重排成「0 点起」。
+   * 如果哪天有人把位移挪回前端，这里 hours[0] 就会变回 6 点的数。
+   */
+  console.log('hours 桶数（应为 24）:', pf.hours.length);
+  console.log('hours 前 3 项（0/1/2 点）:', pf.hours.slice(0, 3), '后 3 项（21/22/23 点）:', pf.hours.slice(-3));
+  console.log('合计:', (pf.hourTotalSec / 3600).toFixed(1), 'h | 峰值小时:', pf.peakHour, '点');
+  console.log('timeWord:', pf.timeWord, '| categoryWord:', pf.categoryWord);
+  console.log('分类:', pf.categories.map((c) => `${c.title}(${(c.sec / 3600).toFixed(1)}h/${c.count}本)`).join(' / '));
+  console.log('作者数:', pf.authorCount, '| 前 3:', pf.authors.slice(0, 3).map((a) => `${a.name} ${a.readTime}`).join(' / '));
+  console.log('勋章:', pf.medals.length, '枚 | 第 1 枚:', JSON.stringify(pf.medals[0]));
+} else {
+  console.log(JSON.stringify(pf));
+}
+
+console.log('\n=== notebooks 笔记列表（v1.3.0 新增） ===');
+const nb = (await invoke('notebooks')).json;
+if (nb.ok) {
+  console.log(`${nb.totalBookCount} 本有笔记，官方 totalNoteCount=${nb.totalNoteCount}，自行累加=${nb.noteTotal}，truncated=${nb.truncated}`);
+  // 两个口径必须一致，否则说明 noteCount 的合并算法漏了某一类
+  console.log('两个口径一致:', nb.totalNoteCount === nb.noteTotal);
+  for (const b of nb.books.slice(0, 5)) {
+    console.log(`  ${b.title} | ${b.author} | ${b.noteCount} 条 (raw=${JSON.stringify(b.raw)}) | 最近 ${new Date(b.lastAt).toISOString().slice(0, 10)}`);
+  }
+  console.log('按最近时间降序:', nb.books.every((b, i) => i === 0 || nb.books[i - 1].lastAt >= b.lastAt));
+
+  console.log('\n=== bookmarks 单本划线（v1.3.0 新增） ===');
+  /*
+   * 不能用 books[0]：笔记本列表按「最近笔记时间」排序，排第一的那本
+   * 很可能整本都是「想法」（raw=[0,N,0]），bookmarklist 会返回 0 条，
+   * 于是「划线功能是否真的能取到内容」这件事根本没被验证。
+   * 所以挑 raw[0] > 0（有 bookmarkCount）的那本来测。
+   */
+  const withMarks = nb.books.find((b) => (b.raw?.[0] ?? 0) > 0) ?? nb.books.find((b) => b.noteCount > 0);
+  console.log('选中的书:', withMarks?.title, 'raw =', JSON.stringify(withMarks?.raw));
+  if (withMarks) {
+    const bm = (await invoke('bookmarks', { bookId: withMarks.bookId })).json;
+    if (bm.ok) {
+      console.log(`《${bm.title}》划线 ${bm.total} 条，markCount=${bm.marks.length}`);
+      console.log('total 与 marks.length 一致:', bm.total === bm.marks.length);
+      for (const m of bm.marks.slice(0, 3)) {
+        console.log(`  [${m.chapter || '无章节'}] ${m.text.slice(0, 40)}…`);
+      }
+      console.log('每条都带章节:', bm.marks.every((m) => typeof m.chapter === 'string' && m.chapter.length > 0));
+      console.log('按时间降序:', bm.marks.every((m, i) => i === 0 || bm.marks[i - 1].at >= m.at));
+    } else {
+      console.log(JSON.stringify(bm));
+    }
+  }
+} else {
+  console.log(JSON.stringify(nb));
+}
+
+console.log('\n=== bookmarks 参数校验（v1.3.0 新增） ===');
+console.log('缺 bookId →', JSON.stringify((await invoke('bookmarks', {})).json));
+console.log('空 bookId →', JSON.stringify((await invoke('bookmarks', { bookId: '   ' })).json));
+console.log('不存在的书 →', JSON.stringify((await invoke('bookmarks', { bookId: '999999999999' })).json).slice(0, 200));
+
 console.log('\n=== status 的 progress 字段（v0.3.0 新增） ===');
 console.log(JSON.stringify((await invoke('status')).json.progress));
 

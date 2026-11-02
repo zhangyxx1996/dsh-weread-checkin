@@ -280,6 +280,211 @@ export async function readShelf(apiKey, { signal } = {}) {
 }
 
 /**
+ * 阅读画像：时段分布 / 偏好分类 / 常读作者 / 勋章。
+ *
+ * 四个字段全都出自 /readdata/detail?mode=overall 同一份响应，
+ * 所以这里只打一次接口，不像 readShelf 那样要按月并发十几次。
+ *
+ * @param {string} apiKey
+ * @param {{signal?: AbortSignal}} [opts]
+ */
+export async function readProfile(apiKey, { signal } = {}) {
+  if (!apiKey) return { ok: false, reason: '未配置 WEREAD_API_KEY' };
+  const r = await callGateway(apiKey, { api_name: '/readdata/detail', mode: 'overall' }, signal);
+  const j = r.json;
+  if (!j || (j.errcode !== undefined && j.errcode !== 0)) {
+    return { ok: false, reason: j?.errmsg || `HTTP ${r.status}` };
+  }
+
+  /*
+   * 坑：preferTime 的 24 个桶**从 6 点开始**（下标 0 = 06:00），不是从 0 点。
+   * 官方文档第 49 行明确写过，但返回体本身没有任何提示，直接当下标用会把
+   * 凌晨的人画成傍晚的人。这里统一重排成 0 点→23 点，界面按自然时钟渲染。
+   */
+  const raw = Array.isArray(j.preferTime) ? j.preferTime : [];
+  const byHour = new Array(24).fill(0);
+  for (let i = 0; i < raw.length && i < 24; i += 1) {
+    byHour[(i + 6) % 24] = Number(raw[i]) || 0;
+  }
+  const hourTotal = byHour.reduce((a, b) => a + b, 0);
+  let peakHour = -1;
+  let peakSec = 0;
+  for (let hh = 0; hh < 24; hh += 1) {
+    if (byHour[hh] > peakSec) { peakSec = byHour[hh]; peakHour = hh; }
+  }
+
+  const categories = (j.preferCategory ?? [])
+    .map((c) => ({
+      title: c.categoryTitle ?? '',
+      parent: c.parentCategoryTitle ?? '',
+      // val 是归一化权重，但实测经常不返回，所以自己按 readingTime 算比例
+      count: c.readingCount ?? 0,
+      sec: c.readingTime ?? 0,
+    }))
+    .filter((c) => c.title)
+    .sort((a, b) => b.sec - a.sec);
+  const catMax = categories.reduce((a, c) => Math.max(a, c.sec), 0);
+
+  const authors = (j.preferAuthor ?? [])
+    .map((a) => ({
+      name: a.name ?? '',
+      count: a.count ?? 0,
+      // 注意：这个字段是**格式化字符串**（"6小时45分钟"），不是秒数
+      readTime: a.readTime ?? '',
+    }))
+    .filter((a) => a.name);
+
+  const medals = (j.medals ?? [])
+    .map((m) => ({
+      id: m.id ?? '',
+      hint: m.hint ?? m.displayText ?? '',
+      title: m.title ?? m.name ?? '',
+      rankText: m.rankText ?? '',
+      ctime: m.ctime ?? 0,
+    }))
+    .filter((m) => m.hint)
+    // 最近的在前，界面只露前几枚，其余折进「全部」
+    .sort((a, b) => b.ctime - a.ctime);
+
+  return {
+    ok: true,
+    hours: byHour,
+    hourTotalSec: hourTotal,
+    peakHour,
+    peakSec,
+    timeWord: j.preferTimeWord ?? '',
+    categoryWord: j.preferCategoryWord ?? '',
+    categories,
+    catMaxSec: catMax,
+    authorCount: j.authorCount ?? authors.length,
+    authors,
+    medals,
+  };
+}
+
+/**
+ * 笔记本列表：每本书有多少条笔记/划线。
+ *
+ * 计数口径是三个字段相加：noteCount（想法）+ bookmarkCount（划线）+ reviewCount（点评）。
+ * 实测它们互斥——囚徒健身 7 条全在 bookmarkCount、活着 7 条全在 noteCount，
+ * 只取其中一个会少算一半。顶层 totalNoteCount 是官方口径，但对不上这个和，
+ * 所以界面上两个都显示，让差异可见而不是假装没有。
+ *
+ * @param {string} apiKey
+ * @param {{signal?: AbortSignal, maxPages?: number}} [opts]
+ */
+export async function readNotebooks(apiKey, { signal, maxPages = 5 } = {}) {
+  if (!apiKey) return { ok: false, reason: '未配置 WEREAD_API_KEY' };
+
+  const books = [];
+  let lastSort = null;
+  let pages = 0;
+  let totalBookCount = null;
+  let totalNoteCount = null;
+
+  // 游标分页：hasMore=1 时用最后一条的 sort 作为下一页的 lastSort
+  while (pages < maxPages) {
+    const body = { api_name: '/user/notebooks', count: 50 };
+    if (lastSort !== null) body.lastSort = lastSort;
+    const r = await callGateway(apiKey, body, signal);
+    const j = r.json;
+    if (!j || (j.errcode !== undefined && j.errcode !== 0)) {
+      if (pages === 0) return { ok: false, reason: j?.errmsg || `HTTP ${r.status}` };
+      break; // 后续页失败就用已拿到的
+    }
+    if (totalBookCount === null) totalBookCount = j.totalBookCount ?? null;
+    if (totalNoteCount === null) totalNoteCount = j.totalNoteCount ?? null;
+
+    const list = j.books ?? [];
+    for (const b of list) {
+      const book = b.book ?? {};
+      books.push({
+        bookId: b.bookId ?? book.bookId ?? '',
+        title: book.title ?? '未知书名',
+        author: book.author ?? '',
+        cover: book.cover ?? null,
+        // 三个计数必须相加，见函数头注释
+        noteCount: (b.noteCount ?? 0) + (b.bookmarkCount ?? 0) + (b.reviewCount ?? 0),
+        /*
+         * 保留三个原始字段但**不按名字当语义用**：实测 noteCount 与
+         * bookmarkCount 并不是「想法 / 划线」的二分——活着 noteCount=7 而
+         * bookmarkCount=0，可 /book/bookmarklist 照样返回 7 条划线原文。
+         * 所以界面只显示总和；具体有几条划线，要展开后由 bookmarklist 说了算。
+         */
+        raw: [b.noteCount ?? 0, b.bookmarkCount ?? 0, b.reviewCount ?? 0],
+        // sort 是「最近一条笔记」的秒级时间戳，也充当分页游标
+        lastAt: b.sort ? b.sort * 1000 : 0,
+        progress: typeof b.readingProgress === 'number' ? b.readingProgress : null,
+      });
+    }
+    pages += 1;
+    if (j.hasMore !== 1 || list.length === 0) break;
+    lastSort = list[list.length - 1].sort ?? null;
+    if (lastSort === null) break;
+  }
+
+  books.sort((a, b) => b.lastAt - a.lastAt);
+  return {
+    ok: true,
+    books,
+    totalBookCount: totalBookCount ?? books.length,
+    // 官方口径的总条数，和下面 noteTotal（自行累加）并列展示
+    totalNoteCount: totalNoteCount ?? null,
+    noteTotal: books.reduce((a, b) => a + b.noteCount, 0),
+    truncated: pages >= maxPages && books.length === pages * 50,
+  };
+}
+
+/**
+ * 某一本书的全部划线原文。
+ *
+ * 坑：/book/bookmarklist 的 updated 只含**划线**，不含想法/点评。
+ * 囚徒健身在 notebooks 里 bm=7，这里却返回 0 条——那 7 条是 thoughts，
+ * 得走 /review/list/mine。所以「有笔记但拉不到划线」是正常现象，不是错误，
+ * 界面要如实说「这本书只有想法，没有划线」而不是报「读取失败」。
+ *
+ * @param {string} apiKey
+ * @param {string} bookId
+ * @param {{signal?: AbortSignal}} [opts]
+ */
+export async function readBookmarks(apiKey, bookId, { signal } = {}) {
+  if (!apiKey) return { ok: false, reason: '未配置 WEREAD_API_KEY' };
+  if (!bookId) return { ok: false, reason: '缺少 bookId' };
+
+  const r = await callGateway(apiKey, { api_name: '/book/bookmarklist', bookId }, signal);
+  const j = r.json;
+  if (!j || (j.errcode !== undefined && j.errcode !== 0)) {
+    return { ok: false, reason: j?.errmsg || `HTTP ${r.status}` };
+  }
+
+  // chapterUid → 章节标题，划线本身不带章节名
+  const chapterTitle = new Map();
+  for (const c of j.chapters ?? []) {
+    if (c.chapterUid !== undefined) chapterTitle.set(String(c.chapterUid), c.title ?? '');
+  }
+
+  const marks = (j.updated ?? [])
+    .filter((m) => m.markText)
+    .map((m) => ({
+      id: m.bookmarkId ?? '',
+      text: m.markText,
+      chapter: chapterTitle.get(String(m.chapterUid)) ?? '',
+      at: m.createTime ? m.createTime * 1000 : 0,
+      range: m.range ?? '',
+    }))
+    .sort((a, b) => b.at - a.at);
+
+  return {
+    ok: true,
+    bookId,
+    title: j.book?.title ?? '',
+    author: j.book?.author ?? '',
+    marks,
+    total: marks.length,
+  };
+}
+
+/**
  * 取一份完整的阅读数据视图，供界面直接渲染。
  * 并行拉 weekly / monthly / overall，任何一项失败都不影响其它项。
  * goalSec 由调用方传入（用户设定的「每日目标」），达标判定一律用它，

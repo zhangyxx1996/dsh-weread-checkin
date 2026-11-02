@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.1.9';
+    const PLUGIN_VERSION = '1.2.0';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -394,6 +394,80 @@ window.__ModuleLoader__.load({
   color: var(--dsw-alias-label-secondary);
   font-variant-numeric: tabular-nums;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ===== 阅读画像：24 小时时段分布 ===== */
+.wr-hours {
+  display: grid; grid-template-columns: repeat(24, 1fr);
+  gap: 3px; align-items: end; height: 54px; min-width: 0;
+}
+.wr-hours-bar {
+  min-width: 0; border-radius: 2px 2px 1px 1px;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent);
+}
+.wr-hours-bar-peak { background: var(--dsw-alias-brand-primary); }
+.wr-hours-axis {
+  display: flex; justify-content: space-between;
+  margin-top: 5px; font-size: 9.5px; color: var(--dsw-alias-label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== 阅读画像：偏好分类排行榜 ===== */
+.wr-rank { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.wr-rank-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px; align-items: baseline;
+}
+.wr-rank-name {
+  font-size: 12.5px; font-weight: 550; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wr-rank-val {
+  font-size: 11.5px; color: var(--dsw-alias-label-secondary);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.wr-rank-track {
+  grid-column: 1 / -1; height: 5px; border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2); overflow: hidden;
+}
+.wr-rank-fill { height: 100%; border-radius: 999px; background: var(--dsw-alias-brand-primary); }
+
+/* ===== 笔记：书列表与划线原文 ===== */
+.wr-note-row { display: flex; gap: 11px; padding: 11px 0; width: 100%; text-align: left; }
+.wr-note-row + .wr-note-row { border-top: 1px solid var(--dsw-alias-border-l1); }
+.wr-note-cover {
+  width: 34px; height: 46px; flex: none; border-radius: 4px;
+  object-fit: cover; background: var(--dsw-alias-bg-layer-2);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .16);
+}
+.wr-note-cover-none {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--dsw-alias-label-secondary);
+}
+.wr-note-main { min-width: 0; flex: 1 1 auto; }
+.wr-note-title {
+  font-size: 13px; font-weight: 550; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wr-note-sub {
+  margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 9px;
+  font-size: 11px; color: var(--dsw-alias-label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.wr-mark {
+  padding: 9px 11px; border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-2);
+  font-size: 12.5px; line-height: 1.65;
+}
+.wr-mark + .wr-mark { margin-top: 7px; }
+.wr-mark-ch {
+  margin-bottom: 4px; font-size: 10.5px;
+  color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums;
+}
+.wr-mark-fold {
+  padding: 12px 11px; border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-2);
+  font-size: 11.5px; color: var(--dsw-alias-label-secondary); line-height: 1.6;
 }
 
 /* ===== 表单 ===== */
@@ -1268,6 +1342,244 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /**
+     * 阅读画像：时段分布 / 偏好分类 / 常读作者 / 勋章。
+     *
+     * 懒加载（和 ShelfCard 同一个套路）：进界面不请求，用户点开才拉。
+     * 这里刻意把「展开」做成能看见内容的门槛——profile 要一次拉 overall 统计，
+     * 首屏已经有 dashboard 在并行三次请求了，不该再叠一个。
+     */
+    function ProfileCard() {
+      const [data, setData] = React.useState(null);
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError] = React.useState('');
+      const [allMedals, setAllMedals] = React.useState(false);
+
+      const load = React.useCallback(() => {
+        setLoading(true);
+        setError('');
+        call('profile')
+          .then((res) => {
+            if (res?.ok) setData(res);
+            else setError(res?.reason || '读取阅读画像失败');
+          })
+          .catch((e) => setError(String(e?.message ?? e)))
+          .finally(() => setLoading(false));
+      }, []);
+
+      const hours = data?.hours ?? [];
+      const maxSec = Math.max(1, ...hours);
+      const cats = (data?.categories ?? []).slice(0, 6);
+      const catMax = Math.max(1, data?.catMaxSec ?? 1);
+      const authors = (data?.authors ?? []).slice(0, 6);
+      const medals = data?.medals ?? [];
+      const shownMedals = allMedals ? medals : medals.slice(0, 4);
+
+      return h('div', { className: 'wr-section' },
+        h('div', { className: 'wr-section-title' },
+          h('span', null, '阅读画像'),
+          data
+            ? h('button', {
+              type: 'button', className: 'wr-btn-ghost wr-btn-sm', onClick: load,
+            }, loading ? '刷新中…' : '刷新')
+            : null),
+        h('div', { className: 'wr-group wr-group-pad' },
+          loading && !data ? h('div', { className: 'wr-empty' }, '正在分析阅读习惯…')
+            : error ? h('div', { className: 'wr-empty' },
+              h('div', { className: 'wr-err', style: { marginBottom: '9px' } }, error),
+              h('button', { type: 'button', className: 'wr-btn-ghost wr-btn-sm', onClick: load }, '重试'))
+              : !data ? h('div', { className: 'wr-empty' },
+                h('div', { style: { marginBottom: '10px' } }, '看看你的阅读时段、偏好与勋章'),
+                h('button', { type: 'button', className: 'wr-btn wr-btn-ghost', onClick: load }, '分析阅读画像'))
+                : h('div', null,
+                  // —— 24 小时时段分布 ——
+                  h('div', { style: { marginBottom: '4px' } },
+                    h('div', { className: 'wr-muted', style: { marginBottom: '8px' } },
+                      data.timeWord || '阅读时段分布',
+                      data.peakHour >= 0
+                        ? h('span', null, h('span', {
+                          style: { opacity: .75, fontVariantNumeric: 'tabular-nums' },
+                        }, `　最常在 ${data.peakHour} 点`))
+                        : null)),
+                  h('div', { className: 'wr-hours' },
+                    hours.map((sec, hh) => h('div', {
+                      key: hh,
+                      className: 'wr-hours-bar' + (hh === data.peakHour ? ' wr-hours-bar-peak' : ''),
+                      /*
+                       * 空桶高度给 0 而不是最小 1px：否则凌晨那几个真的没读过的
+                       * 小时会显示成一排小方块，看起来像「有但不多的阅读」。
+                       */
+                      style: { height: `${Math.max(sec > 0 ? 6 : 0, (sec / maxSec) * 100)}%` },
+                      title: `${hh}:00 · ${fmtDuration(sec)}`,
+                    }))),
+                  h('div', { className: 'wr-hours-axis' },
+                    h('span', null, '0'), h('span', null, '6'),
+                    h('span', null, '12'), h('span', null, '18'), h('span', null, '23')),
+
+                  // —— 偏好分类 ——
+                  cats.length
+                    ? h('div', { style: { marginTop: '16px' } },
+                      h('div', { className: 'wr-muted', style: { marginBottom: '9px' } },
+                        data.categoryWord || '偏好分类'),
+                      h('div', { className: 'wr-rank' },
+                        cats.map((c) => h('div', { className: 'wr-rank-row', key: c.title },
+                          h('div', { className: 'wr-rank-name' }, c.title),
+                          h('div', { className: 'wr-rank-val' },
+                            `${fmtDuration(c.sec)} · ${c.count} 本`),
+                          h('div', { className: 'wr-rank-track' },
+                            h('div', {
+                              className: 'wr-rank-fill',
+                              style: { width: `${Math.max(2, (c.sec / catMax) * 100)}%` },
+                            }))))))
+                    : null,
+
+                  // —— 常读作者 ——
+                  authors.length
+                    ? h('div', { style: { marginTop: '16px' } },
+                      h('div', { className: 'wr-muted', style: { marginBottom: '8px' } },
+                        `常读作者${data.authorCount ? `（共 ${data.authorCount} 位）` : ''}`),
+                      h('div', { className: 'wr-chips' },
+                        authors.map((a) => h('span', { className: 'wr-chip', key: a.name },
+                          h('span', { className: 'wr-chip-v' }, a.name),
+                          h('span', { className: 'wr-chip-k' }, `${a.count} 本`)))))
+                    : null,
+
+                  // —— 勋章 ——
+                  medals.length
+                    ? h('div', { style: { marginTop: '16px' } },
+                      h('div', { className: 'wr-muted', style: { marginBottom: '8px' } },
+                        `已获勋章 ${medals.length} 枚`),
+                      h('div', { className: 'wr-chips' },
+                        shownMedals.map((m) => h('span', {
+                          className: 'wr-chip', key: m.id, title: m.rankText || m.hint,
+                        }, h('span', { className: 'wr-chip-v' }, m.hint))),
+                        medals.length > 4
+                          ? h('button', {
+                            type: 'button', className: 'wr-btn-ghost wr-btn-sm',
+                            onClick: () => setAllMedals(!allMedals),
+                          }, allMedals ? '收起' : `全部 ${medals.length} 枚`)
+                          : null))
+                    : null)));
+    }
+
+    /**
+     * 笔记：书籍列表 + 点开看划线原文。
+     *
+     * 两级懒加载：卡片展开才拉列表（notebooks），点某本书才拉那本的划线
+     * （bookmarks）。划线动辄几百字，全量预取会把一次面板渲染变成几十个请求。
+     */
+    function NotesCard() {
+      const [data, setData] = React.useState(null);
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError] = React.useState('');
+      // 同一时间只展开一本：openId 是当前展开的 bookId，空串表示全收起
+      const [openId, setOpenId] = React.useState('');
+      const [marks, setMarks] = React.useState(null);
+      const [markErr, setMarkErr] = React.useState('');
+      const [markLoading, setMarkLoading] = React.useState(false);
+
+      const load = React.useCallback(() => {
+        setLoading(true);
+        setError('');
+        call('notebooks')
+          .then((res) => {
+            if (res?.ok) setData(res);
+            else setError(res?.reason || '读取笔记失败');
+          })
+          .catch((e) => setError(String(e?.message ?? e)))
+          .finally(() => setLoading(false));
+      }, []);
+
+      const toggle = React.useCallback((bookId) => {
+        if (openId === bookId) { setOpenId(''); return; }
+        setOpenId(bookId);
+        setMarks(null);
+        setMarkErr('');
+        setMarkLoading(true);
+        call('bookmarks', { bookId })
+          .then((res) => {
+            if (res?.ok) setMarks(res);
+            else setMarkErr(res?.reason || '读取划线失败');
+          })
+          .catch((e) => setMarkErr(String(e?.message ?? e)))
+          .finally(() => setMarkLoading(false));
+      }, [openId]);
+
+      const books = data?.books ?? [];
+
+      return h('div', { className: 'wr-section' },
+        h('div', { className: 'wr-section-title' },
+          h('span', null, '笔记与划线'),
+          data
+            ? h('button', {
+              type: 'button', className: 'wr-btn-ghost wr-btn-sm', onClick: load,
+            }, loading ? '刷新中…' : '刷新')
+            : null),
+        h('div', { className: 'wr-group wr-group-pad' },
+          loading && !data ? h('div', { className: 'wr-empty' }, '正在读取笔记本…')
+            : error ? h('div', { className: 'wr-empty' },
+              h('div', { className: 'wr-err', style: { marginBottom: '9px' } }, error),
+              h('button', { type: 'button', className: 'wr-btn-ghost wr-btn-sm', onClick: load }, '重试'))
+              : !data ? h('div', { className: 'wr-empty' },
+                h('div', { style: { marginBottom: '10px' } }, '把划线过的句子捞回来看看'),
+                h('button', { type: 'button', className: 'wr-btn wr-btn-ghost', onClick: load }, '查看我的笔记'))
+                : !books.length ? h('div', { className: 'wr-empty' }, '还没有任何笔记或划线')
+                  : h('div', null,
+                    h('div', {
+                      style: {
+                        display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+                        marginBottom: '6px',
+                      },
+                    },
+                    h('div', null,
+                      h('span', { style: { fontSize: '20px', fontWeight: 700, letterSpacing: '-.5px' } },
+                        `${data.noteTotal ?? 0}`),
+                      h('span', { className: 'wr-muted' }, ' 条')),
+                    h('div', { className: 'wr-muted', style: { textAlign: 'right' } },
+                      `来自 ${books.length} 本书`)),
+                    books.map((b) => h('div', { key: b.bookId },
+                      h('button', {
+                        type: 'button',
+                        className: 'wr-note-row',
+                        onClick: () => toggle(b.bookId),
+                        style: {
+                          background: 'none', border: 'none', cursor: 'pointer',
+                          color: 'inherit', font: 'inherit', padding: '11px 0',
+                        },
+                      },
+                      b.cover
+                        ? h('img', { className: 'wr-note-cover', src: b.cover, alt: b.title })
+                        : h('div', { className: 'wr-note-cover wr-note-cover-none' }, BookGlyph(14)),
+                      h('div', { className: 'wr-note-main' },
+                        h('div', { className: 'wr-note-title' }, b.title),
+                        h('div', { className: 'wr-note-sub' },
+                          h('span', null, `${b.noteCount} 条`),
+                          b.author ? h('span', null, b.author) : null,
+                          b.lastAt
+                            ? h('span', null, `最近 ${ymdLocal(new Date(b.lastAt)).slice(5)}`)
+                            : null))),
+                      openId === b.bookId ? h('div', { style: { marginTop: '4px' } },
+                        markLoading ? h('div', { className: 'wr-mark-fold' }, '正在读取划线…')
+                          : markErr ? h('div', { className: 'wr-mark-fold wr-err' }, markErr)
+                            : !marks ? null
+                              : marks.marks.length
+                                ? h('div', null, marks.marks.map((m) => h('div', {
+                                  className: 'wr-mark', key: m.id,
+                                },
+                                m.chapter ? h('div', { className: 'wr-mark-ch' }, m.chapter) : null,
+                                h('div', null, m.text))))
+                                : h('div', { className: 'wr-mark-fold' },
+                                  /*
+                                   * 这句提示是实测出来的：有的书笔记数有值，
+                                   * 但 bookmarklist 的 updated 是空数组——那些条数是
+                                   * 「想法」，而想法归 /review/list/mine 管。把它说清楚，
+                                   * 比显示「0 条」让人以为数据丢了要好。
+                                   */
+                                  '这本书的笔记是想法（评论），不是划线原文，暂不支持在此查看。'))
+                        : null)))),
+      );
+    }
+
     /** 累计统计。 */
     function OverallCard({ overall }) {
       if (!overall) return null;
@@ -1499,6 +1811,8 @@ window.__ModuleLoader__.load({
             h('div', { className: 'wr-cell wr-cell-wide' }, h(CalendarCard, { data })),
             h('div', { className: 'wr-cell' }, h(ShelfCard)),
             h('div', { className: 'wr-cell' }, h(OverallCard, { overall: data.overall })),
+            h('div', { className: 'wr-cell' }, h(ProfileCard)),
+            h('div', { className: 'wr-cell' }, h(NotesCard)),
           ),
           h('div', { className: 'wr-version' }, `微信读书打卡 v${data.version || PLUGIN_VERSION}`)));
     }

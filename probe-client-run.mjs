@@ -136,6 +136,41 @@ const responses = {
     ],
     albums: [],
   },
+  /**
+   * v1.2.0 阅读画像。hours 已经是「0 点到 23 点」的自然顺序（服务端重排过），
+   * 客户端不该再做任何位移——这里把峰值放在 15 点，若谁把 +6 的位移挪到前端，
+   * 断言里的「最常在 15 点」就会错位成 21 点，立刻暴露。
+   */
+  profile: {
+    ok: true,
+    hours: Array.from({ length: 24 }, (_, hh) => (hh === 15 ? 33380 : (hh < 6 ? 100 : 12000))),
+    hourTotalSec: 418159, peakHour: 15, peakSec: 33380,
+    timeWord: '偏好下午与夜晚阅读', categoryWord: '偏好阅读男生小说',
+    categories: [
+      { title: '男生小说', parent: '', count: 77, sec: 1067851 },
+      { title: '文学', parent: '', count: 12, sec: 49200 },
+    ],
+    catMaxSec: 1067851,
+    authorCount: 73,
+    authors: [{ name: '余华', count: 3, readTime: '6小时45分钟' }, { name: '刘慈欣', count: 2, readTime: '2小时' }],
+    medals: [
+      { id: 'M9-0-10', hint: '阅读 10 本神作', title: '阅读神作', rankText: '第3994406位获得此勋章的书友', ctime: 1700000000 },
+      { id: 'M2-1-5', hint: '连续阅读 5 天', title: '持之以恒', rankText: '第100位获得此勋章的书友', ctime: 1690000000 },
+    ],
+  },
+  // v1.3.0 笔记列表：刻意留一本「有笔记数但没有划线原文」的（囚徒健身那类真实情况）
+  notebooks: {
+    ok: true, totalBookCount: 3, totalNoteCount: 9, noteTotal: 9, truncated: false,
+    books: [
+      { bookId: '834464', title: '活着', author: '余华', cover: '', noteCount: 7, raw: [7, 0, 0], lastAt: new Date(2024, 4, 15).getTime(), progress: 100 },
+      { bookId: '750578', title: '囚徒健身', author: '保罗·威德', cover: '', noteCount: 2, raw: [0, 2, 0], lastAt: new Date(2022, 5, 1).getTime(), progress: 97 },
+    ],
+  },
+  // v1.3.0 单本划线：传给活着的 bookId 才有内容，其余返回空（模拟「想法不是划线」）
+  bookmarks: {
+    ok: true, bookId: '834464', title: '活着', author: '余华', total: 1,
+    marks: [{ id: '834464_5_1', text: '我知道黄昏正在转瞬即逝，黑夜从天而降了。', chapter: '五', at: 1557891659000, range: '15073-15141' }],
+  },
   dashboard: {
     ok: true, configured: true, autoTime: '08:30', minutes: 10, goalMinutes: 20, lastDayDone: true, lastRunAt: Date.now(), lastFail: '',
     progress: { done: 0, total: 0, startedAt: 0, todayBefore: 0, todaySec: null, phase: 'idle' },
@@ -863,6 +898,89 @@ function collectCells(node, acc = []) {
   st.progress = savedSt.progress;
   st.lastRunAt = savedSt.lastRunAt;
   await settle(panelComp, {}, 2);
+}
+
+// 15) v1.2.0 阅读画像 + v1.3.0 笔记：都要懒加载，点开才请求
+{
+  assert.ok(
+    !requested.some((u) => u.endsWith('/profile')),
+    '阅读画像不该在进界面时就请求（首屏已经有 dashboard 在并行拉三次）',
+  );
+  assert.ok(
+    !requested.some((u) => u.endsWith('/notebooks')),
+    '笔记不该在进界面时就请求',
+  );
+
+  // —— 画像：点「分析阅读画像」才拉 ——
+  clickButton(panelComp, {}, '分析阅读画像');
+  await settle(panelComp, {}, 6);
+  assert.ok(requested.some((u) => u.endsWith('/profile')), '点了按钮应请求 /profile');
+  const pTxt = flattenText(renderTree(panelComp));
+  assert.ok(pTxt.includes('阅读画像'), '画像卡标题应出现，实际: ' + pTxt.slice(0, 200));
+  /*
+   * 峰值小时 = 15 是刻意的：服务端已经把 preferTime 从「6 点起」重排成「0 点起」，
+   * 前端若再位移一次就会显示成 21 点。这条断言同时锁住两端不要重复位移。
+   */
+  assert.ok(pTxt.includes('最常在 15 点'), '峰值小时应直接显示 15 点，不许再位移 +6，实际: ' + pTxt.slice(0, 300));
+  assert.ok(pTxt.includes('偏好下午与夜晚阅读'), '应显示官方给的时间偏好文案');
+  assert.ok(pTxt.includes('男生小说'), '应显示偏好分类');
+  assert.ok(pTxt.includes('余华'), '应显示常读作者');
+  assert.ok(pTxt.includes('阅读 10 本神作'), '应显示勋章');
+  const pCls = collectAllClasses(renderTree(panelComp)).join(' ');
+  assert.ok(pCls.includes('wr-hours'), '时段分布应有 .wr-hours 容器');
+  assert.ok(pCls.includes('wr-rank-track'), '偏好分类应有排行条');
+  // 24 根柱子，一根不能少（有些小时读数为 0，但柱子本身要在，否则 0 点那根会消失错位）
+  const barCount = collectAllClasses(renderTree(panelComp)).filter((c) => c.startsWith('wr-hours-bar')).length;
+  assert.strictEqual(barCount, 24, `时段分布应有 24 根柱子，实际 ${barCount}`);
+  assert.ok(pCls.includes('wr-hours-bar-peak'), '峰值那根柱子要高亮');
+  console.log('✓ 阅读画像 → 24 根时段柱 + 峰值高亮 + 分类排行 + 作者 + 勋章');
+
+  // —— 笔记：点「查看我的笔记」才拉列表 ——
+  clickButton(panelComp, {}, '查看我的笔记');
+  await settle(panelComp, {}, 6);
+  assert.ok(requested.some((u) => u.endsWith('/notebooks')), '点了按钮应请求 /notebooks');
+  const nTxt = flattenText(renderTree(panelComp));
+  assert.ok(nTxt.includes('笔记与划线'), '笔记卡标题应出现，实际: ' + nTxt.slice(0, 200));
+  assert.ok(nTxt.includes('来自 2 本书'), '应显示来源书籍数，实际: ' + nTxt.slice(0, 300));
+  assert.ok(nTxt.includes('活着') && nTxt.includes('囚徒健身'), '应列出两本书');
+
+  // 展不开的时候不该提前拉任何一本书的划线
+  assert.ok(
+    !requested.some((u) => u.endsWith('/bookmarks')),
+    '列表刚出来时不该预取任何书的划线原文',
+  );
+
+  // —— 点某本书才拉那本的划线 ——
+  clickButton(panelComp, {}, '活着');
+  await settle(panelComp, {}, 6);
+  assert.ok(requested.some((u) => u.endsWith('/bookmarks')), '点开某本书应请求 /bookmarks');
+  const mTxt = flattenText(renderTree(panelComp));
+  assert.ok(
+    mTxt.includes('我知道黄昏正在转瞬即逝'),
+    '应显示划线原文，实际: ' + mTxt.slice(0, 400),
+  );
+  assert.ok(mTxt.includes('五'), '应显示划线所属章节');
+  console.log('✓ 笔记与划线 → 两级懒加载 + 划线原文与章节');
+
+  // —— 「有笔记数但没有划线」要说清是想法，不能显示成空 ——
+  const savedBookmarks = responses.bookmarks;
+  responses.bookmarks = { ok: true, bookId: '750578', title: '囚徒健身', author: '保罗·威德', total: 0, marks: [] };
+  clickButton(panelComp, {}, '囚徒健身');
+  await settle(panelComp, {}, 6);
+  const tTxt = flattenText(renderTree(panelComp));
+  assert.ok(
+    tTxt.includes('想法'),
+    '划线为空时应说明「那些条数是想法，不是划线」，实际: ' + tTxt.slice(0, 400),
+  );
+  responses.bookmarks = savedBookmarks;
+  console.log('✓ 有笔记无划线 → 提示是「想法」而非空列表');
+
+  // 新卡片用的类必须在样式表里，且必须走主题令牌
+  const css2 = styleTags[0].textContent;
+  for (const cls of ['.wr-hours', '.wr-rank', '.wr-note-row', '.wr-mark']) {
+    assert.ok(css2.includes(cls), `样式缺少 ${cls}`);
+  }
+  console.log('✓ 新卡片样式齐全');
 }
 
 console.log('\n请求过的接口:', [...new Set(requested.map((u) => u.split('/').pop()))].join(', '));
