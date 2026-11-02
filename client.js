@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.1.7';
+    const PLUGIN_VERSION = '1.1.8';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -369,6 +369,14 @@ window.__ModuleLoader__.load({
 .wr-cal-nav-btn:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
 .wr-cal-nav-btn:disabled { opacity: .35; cursor: default; }
 .wr-cal-nav-label { font-size: 12.5px; font-weight: 600; min-width: 92px; text-align: center; font-variant-numeric: tabular-nums; }
+/* 历史拉取失败时给一个可点的重试，否则用户只能靠切月历碰运气 */
+.wr-cal-retry {
+  display: inline-block; margin-left: 8px; padding: 3px 10px;
+  border: 1px solid var(--dsw-alias-border-l2); background: transparent;
+  color: var(--dsw-alias-label-primary); border-radius: 8px; cursor: pointer;
+  font-family: inherit; font-size: 11.5px;
+}
+.wr-cal-retry:hover { background: var(--dsw-alias-bg-layer-2); }
 
 /* ===== 统计 ===== */
 .wr-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--dsw-alias-border-l1); }
@@ -982,8 +990,10 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 打卡日历：周 / 月 两种视图可切换，月视图可翻看历史月份。
-     * 历史数据（2026-01-01 起）在第一次切到「月」时才请求，之后本地缓存。
+     * 打卡日历：周 / 月 两种视图可切换，两种都能翻看历史。
+     *
+     * 历史数据（2026-01-01 起）在「本月 + 本周」之外才请求：切到月视图、或周视图
+     * 往回翻到上一周及更早。首次拉到后本地缓存，不再重复请求。
      */
     function CalendarCard({ data }) {
       const goalMinutes = data.goalMinutes ?? 10;
@@ -991,35 +1001,98 @@ window.__ModuleLoader__.load({
       const todayStr = ymdLocal(new Date());
       const [mode, setMode] = React.useState('week');
       const [history, setHistory] = React.useState(null);
-      const [loading, setLoading] = React.useState(false);
       const [error, setError] = React.useState('');
       const [cursor, setCursor] = React.useState(() => {
         const d = new Date();
         return { year: d.getFullYear(), month: d.getMonth() + 1 };
       });
       const [weekAnchor, setWeekAnchor] = React.useState(() => weekStartYmd(todayStr));
+      const isThisWeek = weekAnchor === weekStartYmd(todayStr);
 
-      // 切到「月」时才拉历史：不同模块按点击取数
-      React.useEffect(() => {
-        if (mode !== 'month' || history !== null || loading) return;
-        setLoading(true);
+      /**
+       * 什么时候必须补拉历史。
+       *
+       * 只有「本月 + 本周」是自足的：dashboard 给两段序列——week.series 铺满
+       * 周一到周日、month.series 铺满本月 1 号至今。其余日子它一概不覆盖。
+       *
+       * 所以周视图一旦往回翻，那 7 天里大部分会落到「没有任何数据源」的区间，
+       * 于是全被画成 0 秒 → 「未读」红色——而用户那几天其实读过
+       * （实测 2026-10-29 有 2.5 小时、10-30 有 1.5 小时）。
+       * 这种「把有记录的日子显示成没读」比不显示更糟，必须补数据。
+       *
+       * 本周不动则不拉：进面板的第一眼就是本周，那是自足的，不该为此付
+       * 一次逐月拉取的代价（约 2.4 秒）。
+       */
+      const needsHistory = mode === 'month' || !isThisWeek;
+
+      /**
+       * 只尝试一次。
+       *
+       * 不能靠一个 loading 标志当下标：拉取失败时 history 仍是 null，loading 由
+       * true 回到 false 又会让 effect 重新触发，于是变成「失败→重拉→再失败」的
+       * 死循环，每次都要逐月打 11 个接口。失败后停在错误提示上，由用户点
+       * 「重试」再拉。
+       */
+      const [historyTried, setHistoryTried] = React.useState(false);
+
+      const loadHistory = React.useCallback(() => {
+        setHistoryTried(true);
         setError('');
         call('history')
           .then((res) => {
             if (res?.ok) setHistory(res);
             else setError(res?.reason || '读取历史失败');
           })
-          .catch((e) => setError(String(e?.message ?? e)))
-          .finally(() => setLoading(false));
-      }, [mode, history, loading]);
+          .catch((e) => setError(String(e?.message ?? e)));
+      }, []);
 
+      React.useEffect(() => {
+        if (!needsHistory || history !== null || historyTried) return;
+        loadHistory();
+      }, [needsHistory, history, historyTried, loadHistory]);
+
+      /**
+       * 日期 → 秒数。
+       *
+       * 顺序就是优先级（后者覆盖前者）：
+       *   1. history：覆盖 2026-01-01 至今的全量，但只在第一次需要时拉一次、之后是缓存；
+       *   2. dashboard.month / dashboard.week：每次刷新面板都会重取，比 history 新。
+       *
+       * 所以要把新鲜的两段**覆盖**到 history 上，而不是「history 有就整段不用它」——
+       * 否则刚打完卡、日历还是上次缓存的老数据，今日那格不涨。
+       */
       const byDate = React.useMemo(() => {
         const map = new Map();
         if (history?.series) for (const d of history.series) map.set(d.date, d.sec);
-        else if (data.month?.series) for (const d of data.month.series) map.set(d.date, d.sec);
-        if (data.week?.series) for (const d of data.week.series) if (!map.has(d.date)) map.set(d.date, d.sec);
+        if (data.month?.series) for (const d of data.month.series) map.set(d.date, d.sec);
+        if (data.week?.series) for (const d of data.week.series) map.set(d.date, d.sec);
         return map;
       }, [history, data.month, data.week]);
+
+      /** 当前这段是否已经拿到可信数据；没拿到就不能把格子画成「未读」。 */
+      const covered = history !== null || (mode === 'week' && isThisWeek);
+
+      /**
+       * 拉取失败后点「重试」：只把 historyTried 拨回 false，effect 就会自己重拉。
+       * 不在这里直接调 loadHistory，避免 effect 与点击各拉一次。
+       */
+      const retry = React.useCallback(() => {
+        setError('');
+        setHistoryTried(false);
+      }, []);
+
+      /**
+       * 数据没到位时的占位。
+       *
+       * 关键：不能把「还没数据」画成 0 秒，那会被 calCell 判成「未读」红色，
+       * 等于凭空造出几天没读书的假象——这正是本次要修的 bug。
+       */
+      const pendingView = !covered
+        ? (error
+          ? h('div', { className: 'wr-empty wr-err' }, error,
+            h('button', { type: 'button', className: 'wr-cal-retry', onClick: retry }, '重试'))
+          : h('div', { className: 'wr-empty' }, '正在读取历史…'))
+        : null;
 
       const head = h('div', { className: 'wr-section-title' },
         h('span', null, '打卡日历'),
@@ -1037,7 +1110,6 @@ window.__ModuleLoader__.load({
         for (let i = 0; i < 7; i++) days.push(addDaysYmd(weekAnchor, i));
         const weekSec = days.reduce((a, d) => a + (byDate.get(d) ?? 0), 0);
         const weekOk = days.filter((d) => d <= todayStr && (byDate.get(d) ?? 0) >= goalSec).length;
-        const isThisWeek = weekAnchor === weekStartYmd(todayStr);
         return h('div', { className: 'wr-section' },
           head,
           h('div', { className: 'wr-group wr-group-pad' },
@@ -1045,9 +1117,13 @@ window.__ModuleLoader__.load({
               style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' },
             },
             h('div', null,
-              h('span', { style: { fontSize: '20px', fontWeight: 700, letterSpacing: '-.5px' } }, `${weekOk}`),
-              h('span', { className: 'wr-muted' }, ' 天达标'),
-              h('span', { className: 'wr-muted' }, ` · 合计 ${fmtDuration(weekSec)}`)),
+              covered
+                ? h('span', null,
+                  h('span', { style: { fontSize: '20px', fontWeight: 700, letterSpacing: '-.5px' } }, `${weekOk}`),
+                  h('span', { className: 'wr-muted' }, ' 天达标'),
+                  h('span', { className: 'wr-muted' }, ` · 合计 ${fmtDuration(weekSec)}`))
+                // 同上：数据没到位时说「0 天达标」等于把「未知」当「没有」
+                : h('span', { className: 'wr-muted' }, '正在统计…')),
             h('div', { className: 'wr-cal-nav' },
               h('button', {
                 type: 'button', className: 'wr-cal-nav-btn',
@@ -1060,14 +1136,15 @@ window.__ModuleLoader__.load({
                 disabled: isThisWeek,
                 onClick: () => setWeekAnchor(addDaysYmd(weekAnchor, 7)),
               }, '›'))),
-            h('div', { className: 'wr-cal-inner' },
-              h('div', { className: 'wr-cal-grid' },
-                days.map((d) => h('div', { key: `dow-${d}`, className: 'wr-cal-dow' }, dowLabel(dowOfYmd(d)))),
-                days.map((d) => calCell(d, byDate.get(d) ?? 0, goalSec, todayStr)))),
-            h('div', { className: 'wr-legend' },
-              h('span', { className: 'wr-legend-sq wr-cal-ok-2' }), h('span', null, '达标'),
-              h('span', { className: 'wr-legend-sq wr-cal-red-1' }), h('span', null, '未达标'),
-              h('span', { className: 'wr-legend-sq wr-cal-red-0' }), h('span', null, '未读'))),
+            pendingView ?? h('div', null,
+              h('div', { className: 'wr-cal-inner' },
+                h('div', { className: 'wr-cal-grid' },
+                  days.map((d) => h('div', { key: `dow-${d}`, className: 'wr-cal-dow' }, dowLabel(dowOfYmd(d)))),
+                  days.map((d) => calCell(d, byDate.get(d) ?? 0, goalSec, todayStr)))),
+              h('div', { className: 'wr-legend' },
+                h('span', { className: 'wr-legend-sq wr-cal-ok-2' }), h('span', null, '达标'),
+                h('span', { className: 'wr-legend-sq wr-cal-red-1' }), h('span', null, '未达标'),
+                h('span', { className: 'wr-legend-sq wr-cal-red-0' }), h('span', null, '未读')))),
         );
       }
 
@@ -1102,9 +1179,13 @@ window.__ModuleLoader__.load({
             style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' },
           },
           h('div', null,
-            h('span', { style: { fontSize: '20px', fontWeight: 700, letterSpacing: '-.5px' } }, `${monthOk}`),
-            h('span', { className: 'wr-muted' }, ' 天达标'),
-            h('span', { className: 'wr-muted' }, ` · ${fmtDuration(monthSec)}`)),
+            covered
+              ? h('span', null,
+                h('span', { style: { fontSize: '20px', fontWeight: 700, letterSpacing: '-.5px' } }, `${monthOk}`),
+                h('span', { className: 'wr-muted' }, ' 天达标'),
+                h('span', { className: 'wr-muted' }, ` · ${fmtDuration(monthSec)}`))
+              // 数据没到位时不能显示「0 天达标 · 0 分钟」，那是把「未知」说成「没有」
+              : h('span', { className: 'wr-muted' }, '正在统计…')),
           h('div', { className: 'wr-cal-nav' },
             h('button', {
               type: 'button', className: 'wr-cal-nav-btn', disabled: atFloor,
@@ -1115,19 +1196,17 @@ window.__ModuleLoader__.load({
               type: 'button', className: 'wr-cal-nav-btn', disabled: atNow,
               onClick: () => shift(1),
             }, '›'))),
-          loading ? h('div', { className: 'wr-empty' }, '正在读取历史…')
-            : error ? h('div', { className: 'wr-empty wr-err' }, error)
-              : h('div', null,
-                h('div', { className: 'wr-cal-inner' },
-                  h('div', { className: 'wr-cal-grid' },
-                    ['一', '二', '三', '四', '五', '六', '日'].map((d) =>
-                      h('div', { className: 'wr-cal-dow', key: d }, d)),
-                    cells)),
-                h('div', { className: 'wr-legend' },
-                  h('span', { className: 'wr-legend-sq wr-cal-ok-2' }), h('span', null, '达标'),
-                  h('span', { className: 'wr-legend-sq wr-cal-red-1' }), h('span', null, '未达标'),
-                  h('span', { className: 'wr-legend-sq wr-cal-red-0' }), h('span', null, '未读'),
-                  history ? h('span', { style: { marginLeft: '8px' } }, `共 ${history.checkedDays} 天达标`) : null))),
+          pendingView ?? h('div', null,
+            h('div', { className: 'wr-cal-inner' },
+              h('div', { className: 'wr-cal-grid' },
+                ['一', '二', '三', '四', '五', '六', '日'].map((d) =>
+                  h('div', { className: 'wr-cal-dow', key: d }, d)),
+                cells)),
+            h('div', { className: 'wr-legend' },
+              h('span', { className: 'wr-legend-sq wr-cal-ok-2' }), h('span', null, '达标'),
+              h('span', { className: 'wr-legend-sq wr-cal-red-1' }), h('span', null, '未达标'),
+              h('span', { className: 'wr-legend-sq wr-cal-red-0' }), h('span', null, '未读'),
+              history ? h('span', { style: { marginLeft: '8px' } }, `共 ${history.checkedDays} 天达标`) : null))),
       );
     }
 

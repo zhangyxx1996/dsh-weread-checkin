@@ -49,12 +49,47 @@ const document = {
   querySelectorAll: () => [],
 };
 
+// ---------- 相对「今天」的时间坐标 ----------
+// 这些假数据必须跟着真实日期走：日历组件全部按 new Date() 判定「本周 / 上月 / 未来」，
+// 一旦把日期写死（历史版本写死成 2026-10-31），换个星期跑就会满屏假失败。
+const pad2 = (n) => String(n).padStart(2, '0');
+const ymdOf = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const CAL_NOW = new Date();
+const TODAY_YMD = ymdOf(CAL_NOW);
+/** 本周周一（与 client.js 的 weekStartYmd 同口径）。 */
+const WEEK_MONDAY = (() => {
+  const d = new Date(CAL_NOW.getFullYear(), CAL_NOW.getMonth(), CAL_NOW.getDate());
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d;
+})();
+const THIS_WEEK = Array.from({ length: 7 }, (_, i) => ymdOf(addDays(WEEK_MONDAY, i)));
+/** 上一周：dashboard 完全不覆盖这 7 天，正是周历 bug 的现场。 */
+const LAST_WEEK = Array.from({ length: 7 }, (_, i) => ymdOf(addDays(WEEK_MONDAY, -7 + i)));
+const TODAY_SEC = 1230;
+
+/**
+ * 某一天的「真实」秒数——history 与 dashboard.month 共用同一个来源。
+ *
+ * 必须共用：两段数据在真实后端里描述的是同一天同一个数字。如果假数据里它们
+ * 互相打架（比如 history 说 11-01 有 3000 秒、month 说 900 秒），测试断言就成了
+ * 在验证「哪段覆盖哪段」的偶然结果，而不是验证功能。
+ */
+function secForDate(ymd) {
+  if (ymd === TODAY_YMD) return 0; // history 里今日刻意给 0，用来证明 dashboard 覆盖它
+  if (LAST_WEEK.includes(ymd)) return 3000; // 上一周：只有 history 才有这段
+  const [y, m, d] = ymd.split('-').map(Number);
+  const idx = Math.round((new Date(y, m - 1, d) - new Date(2026, 0, 1)) / 86400000);
+  if (idx < 0) return 0;
+  return idx % 5 === 0 ? 2400 : (idx % 3 === 0 ? 420 : 0);
+}
+
 // ---------- 假后端 ----------
 const responses = {
   status: {
     ok: true, configured: true, hasCookie: true, hasBase: true, baseFromBuiltin: true,
-    canVerify: true, running: false, lastRunAt: 0, lastDay: '2026-10-31', lastDone: 20, lastErrors: [],
-    minutes: 10, goalMinutes: 20, autoTime: '08:30', today: '2026-10-31', lastDayDone: true, lastFail: '',
+    canVerify: true, running: false, lastRunAt: 0, lastDay: TODAY_YMD, lastDone: 20, lastErrors: [],
+    minutes: 10, goalMinutes: 20, autoTime: '08:30', today: TODAY_YMD, lastDayDone: true, lastFail: '',
     version: JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version,
   },
   // v0.2.0 侧边栏三色点：没这个假响应时 SidebarIcon 会走 catch 一律变红
@@ -66,16 +101,24 @@ const responses = {
   setupGoal: { ok: true, goalMinutes: 20, message: '每日目标已设为 20 分钟' },
   setupAuto: { ok: true, autoTime: '09:15', message: '已设为每天 09:15 自动打卡' },
   renew: { ok: true, reason: '' },
-  // v0.3.0 日历历史（2026-01-01 起）
+  /**
+   * 历史日级序列（2026-01-01 至今），供日历翻看历史用。
+   *
+   * 刻意让今日在 history 里是 0：dashboard 才是新鲜数据源，它覆盖 history 之后
+   * 今日格子必须仍然达标。若覆盖逻辑写反（history 优先），今日就会变成「未读」。
+   * 上一周（LAST_WEEK）给满 3000 秒：那正是 dashboard 不覆盖、必须靠 history 的区间。
+   */
   history: {
     ok: true, months: 11, goalMinutes: 20, checkedDays: 17, totalSec: 91452,
     series: (() => {
       const out = [];
       const start = new Date(2026, 0, 1);
-      for (let i = 0; i < 305; i += 1) {
+      const end = new Date(CAL_NOW.getFullYear(), CAL_NOW.getMonth(), CAL_NOW.getDate());
+      for (let i = 0; ; i += 1) {
         const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
-        const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        out.push({ date: ymd, sec: i % 5 === 0 ? 1800 : (i % 3 === 0 ? 420 : 0) });
+        if (d > end) break;
+        const ymd = ymdOf(d);
+        out.push({ date: ymd, sec: secForDate(ymd) });
       }
       return out;
     })(),
@@ -96,18 +139,25 @@ const responses = {
   dashboard: {
     ok: true, configured: true, autoTime: '08:30', minutes: 10, goalMinutes: 20, lastDayDone: true, lastRunAt: Date.now(), lastFail: '',
     progress: { done: 0, total: 0, startedAt: 0, todayBefore: 0, todaySec: null, phase: 'idle' },
-    today: { date: '2026-10-31', sec: 1230, min: 20.5, reached: true, threshold: 300 },
+    today: { date: TODAY_YMD, sec: TODAY_SEC, min: 20.5, reached: true, threshold: 300 },
     week: {
-      start: '2026-10-26', end: '2026-11-01', totalSec: 15376, checkedDays: 3, compare: -0.2746,
-      series: Array.from({ length: 7 }, (_, i) => ({ date: `2026-10-${26 + i}`, sec: [2100, 3400, 900, 0, 4400, 3800, 0][i] })),
+      start: THIS_WEEK[0], end: THIS_WEEK[6], totalSec: 15376, checkedDays: 3, compare: -0.2746,
+      series: THIS_WEEK.map((date) => ({
+        date,
+        sec: date > TODAY_YMD ? 0 : (date === TODAY_YMD ? TODAY_SEC : secForDate(date)),
+      })),
       topBooks: [
         { title: '绍宋', author: '', sec: 14641, cover: '' },
         { title: '三体全集（全三册）', author: '刘慈欣', sec: 490, cover: 'https://example.com/c.jpg' },
       ],
     },
     month: {
-      year: 2026, month: 10, firstWeekday: 4, daysInMonth: 31, checkedDays: 5, totalSec: 40108,
-      series: Array.from({ length: 31 }, (_, i) => ({ date: `2026-10-${String(i + 1).padStart(2, '0')}`, sec: i % 3 === 0 ? 900 : 0 })),
+      year: CAL_NOW.getFullYear(), month: CAL_NOW.getMonth() + 1, firstWeekday: 4, daysInMonth: 31,
+      checkedDays: 5, totalSec: 40108,
+      series: Array.from({ length: CAL_NOW.getDate() }, (_, i) => {
+        const date = `${CAL_NOW.getFullYear()}-${pad2(CAL_NOW.getMonth() + 1)}-${pad2(i + 1)}`;
+        return { date, sec: date === TODAY_YMD ? TODAY_SEC : secForDate(date) };
+      }),
     },
     overall: {
       totalSec: 1639101, readDays: 558,
@@ -125,12 +175,24 @@ globalThis.window = { __ModuleLoader__: { load(reg) { loaded = reg; } } };
 const requested = [];
 // 挂起中的请求数：用于模拟「打卡正在跑、接口还没返回」的状态
 const pendingHolds = new Set();
+/**
+ * 一次性故障注入：method → 只失败一次的响应体。
+ *
+ * 用来验证「读取历史失败 → 提示 + 重试按钮 → 点重试后确实重新拉」这条路径。
+ * 只失败一次，所以第二次请求会拿到正常假数据。
+ */
+const onceFailures = new Map();
 async function fakeFetch(url) {
   requested.push(url);
   const method = String(url).split('/').pop();
   if (pendingHolds.has(method)) {
     // 永不 resolve，让 busy 一直保持 true
     await new Promise(() => {});
+  }
+  if (onceFailures.has(method)) {
+    const body = onceFailures.get(method);
+    onceFailures.delete(method);
+    return { ok: true, status: 200, json: async () => body };
   }
   const body = responses[method] ?? { ok: false, error: 'unknown method ' + method };
   return { ok: true, status: 200, json: async () => body };
@@ -397,6 +459,27 @@ function collectTitleAttrs(node, acc = []) {
   return acc;
 }
 
+/**
+ * 收集日历格子 → [{ date, cls }]。
+ * 日历格子的颜色类名和日期是分开的两个属性（className / title），必须一起取，
+ * 否则没法断言「某一天是红是绿」。
+ */
+function collectCells(node, acc = []) {
+  if (node === null || node === undefined || typeof node !== 'object') return acc;
+  if (typeof node.type === 'function') {
+    collectCells(renderTree(node.type, node.props ?? {}, false), acc);
+    return acc;
+  }
+  const cn = node.props?.className;
+  const title = node.props?.title;
+  if (typeof cn === 'string' && cn.includes('wr-cal-cell') && typeof title === 'string') {
+    const date = /^\d{4}-\d{2}-\d{2}/.exec(title)?.[0];
+    if (date) acc.push({ date, cls: cn });
+  }
+  for (const c of node.children ?? []) collectCells(c, acc);
+  return acc;
+}
+
 // 6) 进度条按「每日目标」而非固定 5 分钟：goal=20、sec=1230(20.5min) 应 100% 且变绿
 {
   const tree = renderTree(panelComp);
@@ -411,13 +494,57 @@ function collectTitleAttrs(node, acc = []) {
   console.log('✓ 进度条按每日目标计算 →', w, '且已变绿');
 }
 
-// 7) 日历：默认周视图，点「月」才请求 history，并渲染 2026-01 起的历史
+// 7) 日历周视图：本周自足不预取；往回翻必须补拉历史，且历史日不能画成「未读」
 {
-  assert.ok(!requested.some((u) => u.endsWith('/history')), '进界面不该预取 history（应按点击取数）');
-  clickButton(panelComp, {}, '月');
+  // 进界面时是本週视图，dashboard 的 week.series 恰好铺满本周，足够了 → 不该预取
+  assert.ok(!requested.some((u) => u.endsWith('/history')), '进界面不该预取 history（本周视图是自足的）');
+  const thisWeekCells = collectCells(renderTree(panelComp));
+  assert.ok(thisWeekCells.length >= 7, `周视图应有 7 格，实际 ${thisWeekCells.length}`);
+  assert.ok(
+    thisWeekCells.every((c) => THIS_WEEK.includes(c.date)),
+    '周视图默认应展示本周：' + thisWeekCells.map((c) => c.date).join(','),
+  );
+  console.log('✓ 周视图首屏 → 本周 7 格，未预取 history');
+
+  // 往回翻一周：这 7 天 dashboard 完全不覆盖，必须靠 history 补齐。
+  // 修复前这里不拉 history，7 天全是 0 秒 →「未读」红色（用户的原始反馈）。
+  clickButton(panelComp, {}, '‹');
   await settle(panelComp, {}, 6);
-  assert.ok(requested.some((u) => u.endsWith('/history')), '切到月视图后应请求 history');
-  // 当前是 11 月 1 日，本月只有 1 格；退回上个月（10 月）才能看到齐备的绿/红
+  assert.ok(requested.some((u) => u.endsWith('/history')), '周视图往回翻时应补拉 history');
+  const prevCells = collectCells(renderTree(panelComp));
+  assert.ok(
+    prevCells.every((c) => LAST_WEEK.includes(c.date)),
+    '往回翻一周后应展示上一周：' + prevCells.map((c) => c.date).join(','),
+  );
+  const prevMap = new Map(prevCells.map((c) => [c.date, c.cls]));
+  const missing = LAST_WEEK.filter((d) => !prevMap.has(d));
+  assert.strictEqual(missing.length, 0, '上一周有日期没画出来: ' + missing.join(','));
+  // 假数据里上一周每天 3000 秒（50 分钟 > 目标 20 分钟）→ 必须达标上绿，绝不能是「未读」红
+  for (const d of LAST_WEEK) {
+    const cls = prevMap.get(d);
+    assert.ok(!cls.includes('wr-cal-red-0'), `${d} 明明读过却画成「未读」红，class=${cls}`);
+    assert.ok(cls.includes('wr-cal-ok-'), `${d} 读过 3000 秒应达标上绿，class=${cls}`);
+  }
+  console.log('✓ 周视图往回翻 → 补拉 history，上一周 7 天均按实际秒数上绿（非「未读」红）');
+
+  // 今日必须取 dashboard 的新鲜值，不能被 history 里的 0 秒盖掉（假数据里 history 今日=0）
+  clickButton(panelComp, {}, '›');
+  await settle(panelComp, {}, 4);
+  const backCells = new Map(collectCells(renderTree(panelComp)).map((c) => [c.date, c.cls]));
+  const todayCls = backCells.get(TODAY_YMD);
+  assert.ok(todayCls, '回到本周后应有今日格子');
+  assert.ok(
+    !todayCls.includes('wr-cal-red-0'),
+    `今日取 dashboard 的 ${TODAY_SEC} 秒，不该被 history 的 0 秒覆盖成「未读」，class=${todayCls}`,
+  );
+  console.log('✓ 今日格子 → dashboard 覆盖 history，打卡后不会退回「未读」');
+}
+
+// 7b) 月视图：history 已经在上面拉过了，直接翻月验证绿/红齐备
+{
+  clickButton(panelComp, {}, '月');
+  await settle(panelComp, {}, 4);
+  // 本月可能还没过几天，退回上个月才能看到整月的绿/红分布
   clickButton(panelComp, {}, '‹');
   await settle(panelComp, {}, 3);
   const tree = renderTree(panelComp);
@@ -426,7 +553,7 @@ function collectTitleAttrs(node, acc = []) {
   const cells = collectAllClasses(tree).filter((c) => c.includes('wr-cal-cell'));
   assert.ok(cells.some((c) => c.includes('wr-cal-ok-')), '达标日应上绿色');
   assert.ok(cells.some((c) => c.includes('wr-cal-red-')), '未达标日应上红色');
-  console.log('✓ 日历月视图 → 请求 history，绿/红达标色齐备，格子数', cells.length);
+  console.log('✓ 日历月视图 → 绿/红达标色齐备，格子数', cells.length);
 }
 
 // 8) 书架：常驻展示并预取，封面网格（默认裁到两排）
@@ -630,6 +757,47 @@ function collectTitleAttrs(node, acc = []) {
   Object.assign(st, originalSt);
   await settle(panelComp, {}, 2);
   console.log('✓ dashboard 失败兜底 → 仍从 status 认出「在跑」，停止入口不消失');
+}
+
+// 13) 历史拉取失败：不能死循环重拉，必须停在「错误 + 重试」上，点重试能恢复
+{
+  // 把日历组件从 hook 表里摘掉 = 模拟「刚打开面板、还没有任何历史缓存」
+  const calComp = [...stores.keys()].find((k) => k.name === 'CalendarCard');
+  assert.ok(calComp, '没找到 CalendarCard 组件');
+  stores.delete(calComp);
+  mountDeep(renderTree(panelComp));
+
+  // 只让第一次 history 请求失败
+  requested.length = 0;
+  onceFailures.set('history', { ok: false, reason: '网络开小差了' });
+  clickButton(panelComp, {}, '‹');
+  await settle(panelComp, {}, 8);
+
+  const historyCalls = requested.filter((u) => u.endsWith('/history')).length;
+  assert.strictEqual(historyCalls, 1, `失败后不该自动重拉，实际请求了 ${historyCalls} 次`);
+  const failTxt = flattenText(renderTree(panelComp));
+  assert.ok(failTxt.includes('网络开小差了'), '拉取失败应把原因显示出来，实际: ' + failTxt.slice(0, 160));
+  assert.ok(failTxt.includes('重试'), '拉取失败应给出「重试」按钮');
+  // 关键：失败时绝不能把上一周画成「未读」红——没数据 ≠ 没读书
+  const failCells = collectCells(renderTree(panelComp));
+  assert.strictEqual(
+    failCells.filter((c) => c.cls.includes('wr-cal-red-0')).length,
+    0,
+    '没有历史数据时不该画出任何「未读」红格',
+  );
+  console.log('✓ 历史拉取失败 → 只请求 1 次（不死循环），显示原因与重试，且不伪造「未读」红');
+
+  // 点重试 → 这次成功，上一周按真实秒数上色
+  clickButton(panelComp, {}, '重试');
+  await settle(panelComp, {}, 8);
+  const okCells = new Map(collectCells(renderTree(panelComp)).map((c) => [c.date, c.cls]));
+  for (const d of LAST_WEEK) {
+    const cls = okCells.get(d);
+    assert.ok(cls, `重试成功后应画出 ${d}`);
+    assert.ok(cls.includes('wr-cal-ok-'), `重试成功后 ${d} 应达标上绿，class=${cls}`);
+  }
+  assert.ok(!flattenText(renderTree(panelComp)).includes('网络开小差了'), '重试成功后错误提示应消失');
+  console.log('✓ 点重试 → 重新拉取成功，上一周恢复真实颜色，错误提示消失');
 }
 
 console.log('\n请求过的接口:', [...new Set(requested.map((u) => u.split('/').pop()))].join(', '));
