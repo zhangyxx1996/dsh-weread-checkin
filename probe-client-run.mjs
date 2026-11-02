@@ -621,7 +621,8 @@ function collectCells(node, acc = []) {
 // 10) 继续打卡（v1.1.0）：达标后出现「继续打卡」→ 弹出时长输入 → 可随时停止
 {
   const css = styleTags[0].textContent;
-  assert.ok(css.includes('.wr-btn-stop'), '缺少「停止」按钮样式');
+  assert.ok(css.includes('.wr-btn-run'), '缺少「停止」按钮样式（.wr-btn-run）');
+  assert.ok(!css.includes('.wr-btn-stop'), '残留的旧「停止」按钮样式 .wr-btn-stop 应已删除');
   assert.ok(css.includes('.wr-ask'), '缺少「继续打卡」时长询问面板样式');
 
   // 达标状态下应能看到「继续打卡」，且今日大按钮是「已达标」的绿态
@@ -697,9 +698,12 @@ function collectCells(node, acc = []) {
 
   const tree = renderTree(panelComp);
   const txt = flattenText(tree);
-  // v1.1.3 起：停止入口挂在「继续打卡」按钮上，文案「停止打卡 · 已运行 N 分钟」
+  // v1.1.3 起：停止入口挂在「继续打卡」按钮上；v1.1.9 起文案简化成「停止打卡」，
+  // 用时只留一处（上方状态行），避免同一屏把「已运行 N 分钟」说三遍。
   assert.ok(txt.includes('停止打卡'), '无限模式进行中，应出现「停止打卡」，实际: ' + txt.slice(0, 140));
   assert.ok(txt.includes('已运行'), '运行时应显示「已运行 X 分钟」，不显示上报次数');
+  const runTimeCount = (txt.match(/已运行/g) ?? []).length;
+  assert.strictEqual(runTimeCount, 1, `「已运行」只该出现一次（状态行），实际 ${runTimeCount} 次: ` + txt.slice(0, 200));
   assert.ok(!/\d+\s*次上报中/.test(txt), '不应再显示「N 次上报中」');
   assert.ok(!txt.includes('持续打卡中'), '旧的「持续打卡中」文案应已移除');
   // 主按钮（今日状态位）此时必须仍是绿色达标、不可点，且不随运行变化
@@ -798,6 +802,67 @@ function collectCells(node, acc = []) {
   }
   assert.ok(!flattenText(renderTree(panelComp)).includes('网络开小差了'), '重试成功后错误提示应消失');
   console.log('✓ 点重试 → 重新拉取成功，上一周恢复真实颜色，错误提示消失');
+}
+
+// 14) v1.1.9：次数≠分钟；状态行与主按钮不重复；跨天「上次运行」带日期；死 CSS 清干净
+{
+  const dash = responses.dashboard;
+  const st = responses.status;
+  const savedDash = { progress: dash.progress, lastRunAt: dash.lastRunAt };
+  const savedSt = { progress: st.progress, lastRunAt: st.lastRunAt };
+
+  // 8 次上报 = 4 分钟；total 20 次 = 10 分钟。旧代码会把「20 次」当「20 分钟」显示。
+  // 今日读数压到 10 分钟（< 目标 20），否则 reached 会顶掉主按钮里的「本次补 N 分钟」。
+  const savedTodaySec = dash.today.sec;
+  dash.today = { ...dash.today, sec: 600 };
+  dash.progress = {
+    done: 8, total: 20, startedAt: Date.now(), todayBefore: 600,
+    todaySec: 600, phase: 'reporting', unlimited: false, targetMinutes: 10,
+  };
+  await settle(panelComp, {}, 4);
+  const runTxt = flattenText(renderTree(panelComp));
+  assert.ok(runTxt.includes('本次补 10 分钟'), '20 次上报应换算成「本次补 10 分钟」，实际: ' + runTxt.slice(0, 240));
+  assert.ok(!runTxt.includes('本次补 20 分钟'), '不能把上报次数直接当分钟数');
+  assert.ok(runTxt.includes('已运行 4 分钟'), '8 次上报应显示「已运行 4 分钟」，实际: ' + runTxt.slice(0, 240));
+  const dup = (runTxt.match(/已运行/g) ?? []).length;
+  assert.strictEqual(dup, 1, `「已运行」只该在状态行出现一次，实际 ${dup} 次: ` + runTxt.slice(0, 240));
+  console.log('✓ 次数→分钟换算 + 文案不重复 →', /已运行 \S+ 分钟/.exec(runTxt)?.[0], '/', /本次补 \S+ 分钟/.exec(runTxt)?.[0]);
+
+  dash.today = { ...dash.today, sec: savedTodaySec };
+
+  // 跨天的「上次运行」必须带 MM-DD，不能把前天的 23:40 显示成今天
+  dash.progress = savedDash.progress;
+  const oldTs = new Date(2026, 9, 30, 23, 40).getTime();
+  dash.lastRunAt = oldTs;
+  st.lastRunAt = oldTs;
+  await settle(panelComp, {}, 4);
+  const lastTxt = flattenText(renderTree(panelComp));
+  assert.ok(lastTxt.includes('上次运行'), '跑过之后应显示「上次运行」');
+  assert.ok(lastTxt.includes('10-30 23:40'), '跨天的上次运行应显示「10-30 23:40」，实际: ' + lastTxt.slice(0, 240));
+
+  // 今天跑的仍只显示 HH:MM
+  const nowTs = Date.now();
+  dash.lastRunAt = nowTs;
+  st.lastRunAt = nowTs;
+  await settle(panelComp, {}, 4);
+  const pad2t = (n) => String(n).padStart(2, '0');
+  const nowHm = `${pad2t(new Date(nowTs).getHours())}:${pad2t(new Date(nowTs).getMinutes())}`;
+  const todayTxt = flattenText(renderTree(panelComp));
+  assert.ok(todayTxt.includes(nowHm), `当天应显示 HH:MM（${nowHm}），实际: ` + todayTxt.slice(0, 240));
+  assert.ok(!new RegExp(`\\d{2}-\\d{2} ${nowHm}`).test(todayTxt), '当天不该再带 MM-DD 前缀');
+  console.log('✓ 「上次运行」跨天带日期、当天只显示 HH:MM →', nowHm);
+
+  const css = styleTags[0].textContent;
+  for (const dead of ['.wr-bar-col', '.wr-bar-today', '.wr-book-cover', '.wr-book-title', '.wr-mono', '.wr-btn-stop']) {
+    assert.ok(!css.includes(dead), `${dead} 已无任何使用处，不该还留在 CSS 里`);
+  }
+  console.log('✓ 死 CSS 已清理（周柱状 / 旧书列表 / .wr-mono / .wr-btn-stop）');
+
+  dash.progress = savedDash.progress;
+  dash.lastRunAt = savedDash.lastRunAt;
+  st.progress = savedSt.progress;
+  st.lastRunAt = savedSt.lastRunAt;
+  await settle(panelComp, {}, 2);
 }
 
 console.log('\n请求过的接口:', [...new Set(requested.map((u) => u.split('/').pop()))].join(', '));

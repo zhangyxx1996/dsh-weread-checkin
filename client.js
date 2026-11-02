@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.1.8';
+    const PLUGIN_VERSION = '1.1.9';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -159,7 +159,6 @@ window.__ModuleLoader__.load({
 .wr-ok { color: var(--dsw-alias-state-success-primary); }
 .wr-warn { color: var(--dsw-alias-state-warn-primary); }
 .wr-err { color: var(--dsw-alias-state-error-primary); }
-.wr-mono { font-variant-numeric: tabular-nums; }
 
 /* ===== 今日主卡 ===== */
 .wr-hero-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
@@ -242,14 +241,6 @@ window.__ModuleLoader__.load({
 .wr-btn-ghost:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
 .wr-btn-ghost:disabled { opacity: .45; cursor: default; }
 .wr-btn-sm { padding: 5px 11px; font-size: 12px; }
-/* 无限模式下的「停止」：不动用危险红，只是一眼能看出可以点 */
-.wr-btn-stop {
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-primary);
-  border: 1px solid var(--dsw-alias-border-l2);
-  cursor: pointer;
-}
-.wr-btn-stop:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-3); }
 /* 运行中的「继续打卡」按钮：外观是禁用的灰色，但其实是可点的「停止打卡」 */
 .wr-btn-run,
 .wr-btn-run:disabled {
@@ -302,22 +293,6 @@ window.__ModuleLoader__.load({
 .wr-notice-ok { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent); color: var(--dsw-alias-state-success-primary); }
 .wr-notice-err { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); color: var(--dsw-alias-state-error-primary); }
 .wr-notice-warn { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, transparent); color: var(--dsw-alias-state-warn-primary); }
-
-/* ===== 周柱状 ===== */
-.wr-bars { display: flex; align-items: flex-end; gap: 7px; height: 92px; }
-.wr-bar-col {
-  flex: 1; display: flex; flex-direction: column; align-items: center;
-  gap: 7px; height: 100%; justify-content: flex-end;
-}
-.wr-bar {
-  width: 100%; max-width: 30px; min-height: 4px; border-radius: 6px;
-  background: var(--dsw-alias-bg-layer-2);
-  transition: height .4s cubic-bezier(.4,0,.2,1);
-}
-.wr-bar-on { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 60%, transparent); }
-.wr-bar-today { background: var(--dsw-alias-state-success-primary); }
-.wr-bar-label { font-size: 11px; color: var(--dsw-alias-label-secondary); }
-.wr-bar-label-on { color: var(--dsw-alias-label-primary); font-weight: 700; }
 
 /* ===== 日历：达标绿 / 未达标红 ===== */
 .wr-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
@@ -395,26 +370,6 @@ window.__ModuleLoader__.load({
 }
 .wr-chip-k { color: var(--dsw-alias-label-secondary); }
 .wr-chip-v { font-weight: 650; font-variant-numeric: tabular-nums; }
-
-/* ===== 书列表 ===== */
-.wr-book { display: flex; gap: 11px; align-items: center; padding: 9px 0; }
-.wr-book + .wr-book { border-top: 1px solid var(--dsw-alias-border-l1); }
-.wr-book-cover {
-  width: 32px; height: 43px; border-radius: 5px; object-fit: cover;
-  background: var(--dsw-alias-bg-layer-2); flex: none;
-  box-shadow: 0 1px 3px rgba(0,0,0,.16);
-}
-.wr-book-main { flex: 1; min-width: 0; }
-.wr-book-title {
-  font-size: 13px; font-weight: 500;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.wr-book-sub { font-size: 11.5px; color: var(--dsw-alias-label-secondary); }
-.wr-book-time {
-  font-size: 12.5px; color: var(--dsw-alias-label-secondary);
-  font-variant-numeric: tabular-nums; flex: none; text-align: right;
-}
-.wr-book-time b { color: var(--dsw-alias-label-primary); font-weight: 650; }
 
 /* ===== 书架封面网格 ===== */
 .wr-cover-grid {
@@ -520,6 +475,19 @@ window.__ModuleLoader__.load({
       const d = new Date(ts);
       const p = (n) => String(n).padStart(2, '0');
       return `${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+    /**
+     * 「上次运行」的展示值：今天只显示 HH:MM，跨天补上 MM-DD。
+     * 直接给 HH:MM 会让昨天的 23:40 看起来像今天跑的。
+     */
+    function fmtRunClock(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      const hhmm = fmtClock(ts);
+      const p = (n) => String(n).padStart(2, '0');
+      return ymdLocal(d) === ymdLocal(new Date())
+        ? hhmm
+        : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hhmm}`;
     }
     function dowLabel(i) {
       return ['日', '一', '二', '三', '四', '五', '六'][i] ?? '';
@@ -754,27 +722,28 @@ window.__ModuleLoader__.load({
       // 运行中的用时：本次已上报的次数 × 每次 30 秒
       const runMin = Math.round((done * 30) / 60 * 10) / 10;
 
+      // progress.total / progress.done 是「上报次数」，一次 30 秒；换算成分钟才能
+      // 当分钟用。早先这里直接把次数当日志写成「N/M 分钟」，12 次会显示成
+      // 「12 分钟」（实际 6 分钟），数字和单位对不上。
+      const totalMin = total * 30 / 60;
+
+      // 状态行 = 已经跑了多久（每 30 秒在变），主按钮 = 本次要补多少（静态目标）。
+      // 两者分工，不再像 v1.1.3 那样同一屏把「已运行 N 分钟」说三遍。
       let stateText;
       if (verifying) stateText = '正在核对时长…';
-      else if (unlimited) stateText = `已运行 ${runMin} 分钟`;
-      else if (reporting) {
-        stateText = total > 0
-          ? `已运行 ${Math.min(done, total)}/${total} 分钟`
-          : `已运行 ${runMin} 分钟`;
-      } else if (busy) stateText = `已运行 ${runMin} 分钟`;
+      else if (running) stateText = `已运行 ${runMin} 分钟`;
+      else if (busy) stateText = '正在上报…';
       else if (reached) stateText = '✓ 已达成今日目标';
       else stateText = `还差 ${remainMin} 分钟达成目标`;
       const stateCls = (reached || verifying) ? 'wr-ok' : ((reporting || busy) ? 'wr-muted' : 'wr-warn');
 
-      // 主按钮文案：运行时只显示用时，不再出现「上报中 / N 次」这类内部细节
+      // 主按钮是「状态展示位」（运行时不可点），所以这里写本次任务的目标而不是用时
       let btnLabel;
-      if (verifying) btnLabel = '核对中…';
-      else if (unlimited) btnLabel = `已运行 ${runMin} 分钟`;
-      else if (busy) {
-        btnLabel = (reporting && total > 0)
-          ? `已运行 ${Math.min(done, total)}/${total} 分钟`
-          : `已运行 ${runMin} 分钟`;
-      } else if (reached) btnLabel = `今日已达标 · ${Math.round(goalMinutes)} 分钟`;
+      if (verifying) btnLabel = `已运行 ${runMin} 分钟`;
+      else if (reporting && total > 0) btnLabel = `本次补 ${totalMin} 分钟`;
+      else if (reporting) btnLabel = '不设上限，随时可以停';
+      else if (busy) btnLabel = '正在上报…';
+      else if (reached) btnLabel = `今日已达标 · ${Math.round(goalMinutes)} 分钟`;
       else btnLabel = `立即打卡 · 补 ${Math.max(0.5, Math.min(data.minutes ?? 10, remainMin || 0.5))} 分钟`;
 
       // 继续打卡：解析用户输入的时长。空 = 不设上限（一直打到手动停止）
@@ -794,6 +763,9 @@ window.__ModuleLoader__.load({
         onContinue(Math.min(600, Math.max(0.5, n)));
       };
 
+      // 「上次运行」只要跑过就显示。早先这里挂的是 `lastDayDone`（=「今天跑成功过」），
+      // 于是零点一过、当天还没打卡时整块消失，用户看不到上一次是什么时候跑的。
+      const lastRunText = fmtRunClock(data.lastRunAt);
       return h('div', { className: 'wr-section' },
         h('div', { className: 'wr-section-title' }, h('span', null, '今日')),
         h('div', { className: 'wr-group wr-group-pad' },
@@ -805,12 +777,12 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'wr-hero-goal' }, `/ ${Math.round(goalMinutes)}`),
                 h('span', { className: 'wr-hero-unit' }, '分钟')),
               h('div', { className: `wr-hero-state ${stateCls}` }, stateText)),
-            data.lastDayDone
+            lastRunText
               ? h('div', { style: { textAlign: 'right', flex: 'none' } },
                 h('div', { className: 'wr-hero-meta' }, '上次运行'),
                 h('div', {
                   style: { fontSize: '13px', fontWeight: 600, fontVariantNumeric: 'tabular-nums' },
-                }, fmtClock(data.lastRunAt)))
+                }, lastRunText))
               : null),
 
           h(Track, { sec: shownSec, goalSec, done: reached }),
@@ -840,7 +812,8 @@ window.__ModuleLoader__.load({
                   onClick: onStop,
                 },
                 h('span', { className: 'wr-stop-icon' }),
-                `停止打卡 · 已运行 ${runMin} 分钟`)
+                // 用时已经在上面的状态行里实时显示，这里再说一遍就重复了
+                '停止打卡')
                 : h('button', {
                   type: 'button',
                   className: 'wr-btn wr-btn-ghost',
