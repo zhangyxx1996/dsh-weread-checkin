@@ -57,6 +57,7 @@ $git = (Get-Command git -ErrorAction SilentlyContinue).Source
 & $node probe-client-run.mjs      # 离线渲染
 & $node probe-host.mjs            # Host 接口
 & $node probe-layout-fix.mjs      # 布局约束
+& $node probe-auth-renewal.mjs    # 续期探测必须带 ql:true（v1.1.7 新增）
 
 # 3. 先提交并打 tag（在装机之前！）
 & $git add -A
@@ -96,10 +97,15 @@ $git = (Get-Command git -ErrorAction SilentlyContinue).Source
 | `index.js` / `client.js` / `weread-api.js` / `weread-verify.js` | `probe-*.mjs` 一次性诊断脚本 |
 | `package.json` / `cordis.patch.yml` / `locale/` / `icon.svg` | `_diag.mjs` |
 | `README.md` | `node_modules/`、`*.log` |
-| 三个回归测试：`probe-client-run.mjs`、`probe-host.mjs`、`probe-layout-fix.mjs` | |
+| 回归测试：`probe-client-run.mjs`、`probe-host.mjs`、`probe-layout-fix.mjs`、`probe-auth-renewal.mjs` | |
 
 诊断脚本用完即弃（`probe-scroll*.mjs`、`probe-slot*.mjs` 之类），
-但**那三个回归测试要留**——它们断言 UI 结构与接口契约，是防回归的主要手段。
+但**上面这四个回归测试要留**——它们断言 UI 结构、接口契约和鉴权请求体，
+是防回归的主要手段。
+
+> 为什么会有 `probe-auth-renewal.mjs`：v1.1.6 的侧边栏红点 bug 是「接口回了 200、
+> 但请求体缺 `ql:true`」，服务端对**有效** Cookie 也回 `-2013 鉴权失败`。
+> 这种错光看代码发现不了，只能靠静态断言钉住。
 
 ## 注意
 
@@ -113,7 +119,11 @@ $git = (Get-Command git -ErrorAction SilentlyContinue).Source
   中文字符串（含报错文案）会变成乱码并引发成片 ParserError。用编辑器改完检查一下：
   `[System.IO.File]::ReadAllBytes('release.ps1')[0..2]` 应为 `239,187,191`。
 - 仓库身份是仓库内局部配置（`DSH Agent <agent@dsh.local>`），没有改全局 git 配置。
-- `core.autocrlf = false`，避免 Windows 换行符污染 diff。
+- **换行符**：本机全局 `core.autocrlf = true`（仓库内没有覆盖它），所以索引里存 LF、
+  工作区落 CRLF —— `git ls-files --eol` 显示 `i/lf w/crlf`。这是正常状态，
+  **不要**为了「消掉 diff 里的换行警告」去改 `core.autocrlf`：改成 `false` 会让
+  所有文件都显示为已修改。手工用 PowerShell 改写文件时也要注意别写出裸 LF
+  （`[System.IO.File]::WriteAllText` 不会自动转换），否则下次 git 触碰时有告警。
 - 推送凭据用本仓库的 `url.insteadOf`（含 token），**只在本仓库生效**。
   注意它不影响 `git remote -v` 的显示：远端 URL 里本来就带 token，
   用 `git remote -v` 排查时别把 token 贴到公开地方。

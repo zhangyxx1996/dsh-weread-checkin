@@ -7,6 +7,7 @@ _*.mjs
 !probe-client-run.mjs
 !probe-host.mjs
 !probe-layout-fix.mjs
+!probe-auth-renewal.mjs
 
 # 依赖与产物
 node_modules/

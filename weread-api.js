@@ -46,6 +46,26 @@ const SYNCKEY_REPAIR_DELAY_MS = 5000;
 const REQUEST_TIMEOUT_MS = 30000;
 const RENEW_TIMEOUT_MS = 20000;
 
+/**
+ * 会话续期接口的请求体。
+ *
+ * **必须带 `ql:true`**。2026-11-02 实测（同一份有效 Cookie，逐项只改一个变量）：
+ *
+ *   payload                          body                                   判定
+ *   {rq, ql:true}  + 有效 Cookie     {"succ":1} + 下发 wr_vid/wr_skey/wr_rt   ✅ 活着
+ *   {rq, ql:false} + 有效 Cookie     {"errCode":-2013,"errMsg":"鉴权失败"}     ❌ 假失效
+ *   {rq}           + 有效 Cookie     同上（ql 缺省等同 false）                 ❌ 假失效
+ *   {rq, ql:true}  + wr_rt 被改坏    -2013 鉴权失败                          真的失效
+ *   {rq, ql:true}  + 缺 wr_vid/wr_rt -2013 params error (node)               缺长期凭据
+ *   {rq, ql:true}  + wr_skey 被改坏  {"succ":1}                              仍然活着
+ *
+ * 关键坑：`ql:false` 对**有效** Cookie 也回 -2013「鉴权失败」，并且 Set-Cookie 用
+ * `Expires=Thu, 01 Jan 1970` 把 wr_vid/wr_skey/wr_rt/wr_pf 四个全部清空。
+ * 拿 ql:false 当探测判据，会把一切正常用户都判成「Cookie 已失效」——
+ * v1.1.6 侧边栏长期红点就是这一行写错导致的。
+ */
+const RENEW_BODY = { rq: '%2Fweb%2Fbook%2Fread', ql: true };
+
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0';
 
 /** 32 位无符号左移：JS 的 `<<` 会溢出，这里复刻 Python 任意精度后再截断的语义。 */
@@ -161,7 +181,7 @@ async function renewSkeyRaw(cookies) {
         'user-agent': UA,
         cookie: cookieHeader(cookies),
       },
-      body: JSON.stringify({ rq: '%2Fweb%2Fbook%2Fread', ql: false }),
+      body: JSON.stringify(RENEW_BODY),
       signal: controller.signal,
     });
     return extractSkey(res);
@@ -171,13 +191,17 @@ async function renewSkeyRaw(cookies) {
 }
 
 /**
- * 刷新 wr_skey：源码依次尝试三种 payload，取响应 Set-Cookie 里的前 8 位。
+ * 刷新 wr_skey：依次尝试几种 payload，取响应 Set-Cookie 里的前 8 位。
+ *
+ * 顺序有讲究：`ql:true` 放第一位。旧版把 `ql:false` 放最前，而实测 ql:false 对有效
+ * Cookie 也回 -2013 并把 Cookie 全清空 —— 虽然它的 Set-Cookie 里 wr_skey 是空值、
+ * 不会骗过 extractSkey（正则要求值至少 1 个字符），但等于白发一次请求。
+ *
  * @returns {string|null} 新密钥；null 表示登录态可能已失效。
  */
 export async function refreshSkey(cookies) {
   const variants = [
-    { rq: '%2Fweb%2Fbook%2Fread', ql: false },
-    { rq: '%2Fweb%2Fbook%2Fread', ql: true },
+    RENEW_BODY,
     { rq: '%2Fweb%2Fbook%2Fread' },
   ];
   for (const variant of variants) {
@@ -216,9 +240,7 @@ export async function refreshSkey(cookies) {
  * 的 `errCode:-2012 登录超时`，只有完全不带 Cookie 时才变成 -2010。也就是说这些接口
  * 根本区分不出登录态好坏，拿它当判据会让徽标长期误报红点（用户明明能正常打卡）。
  *
- * 只有 `/web/login/renewal` 有区分力：
- *   有 Cookie（无论 wr_skey 新旧）→ `{"succ":1}` 且下发新的 wr_skey
- *   无 Cookie                      → `{"errCode":-2013,"errMsg":"params error (node)"}`，无 Set-Cookie
+ * `/web/login/renewal` 有区分力，但**只认带 `ql:true` 的请求体**（详见 RENEW_BODY 上的实测矩阵）。
  * 顺带说明：wr_skey 本身不承担主要认证作用，改坏了照样能续期 —— 真正管用的是
  * wr_vid / wr_rt 这些长期凭据。所以判断失效不能只看 wr_skey 的值。
  */
@@ -249,7 +271,7 @@ export async function probeAuth(cookies) {
         'user-agent': UA,
         cookie: cookieHeader(cookies),
       },
-      body: JSON.stringify({ rq: '%2Fweb%2Fbook%2Fread', ql: false }),
+      body: JSON.stringify(RENEW_BODY),
       signal: controller.signal,
     });
     const text = await res.text();
@@ -263,7 +285,14 @@ export async function probeAuth(cookies) {
     const skey = extractSkey(res);
     const code = json?.errcode ?? json?.errCode;
     if (code === -2010 || code === -2013 || res.status === 401) {
-      return { ok: false, reason: 'Cookie 已失效，需要重新粘贴', hard: true };
+      // -2013 有两种 errMsg，含义不同，别把「缺长期凭据」笼统说成「已失效」：
+      //   "鉴权失败"            → wr_rt 真失效了，确实要重贴 Cookie
+      //   "params error (node)" → 缺 wr_vid / wr_rt，粘少了，也是重贴
+      const detail = String(json?.errMsg ?? '');
+      const reason = /params error/i.test(detail)
+        ? 'Cookie 不完整（缺少 wr_vid / wr_rt），请重新复制整段 Cookie'
+        : 'Cookie 已失效，需要重新粘贴';
+      return { ok: false, reason, hard: true };
     }
     if (skey || json?.succ === 1) return { ok: true, reason: '', hard: false };
     if (res.status !== 200 || json === null) {

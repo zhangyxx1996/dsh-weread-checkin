@@ -95,7 +95,8 @@ foreach ($f in @('index.js', 'client.js', 'weread-api.js', 'weread-verify.js')) 
 Write-Host "=== 2/6 回归测试 ===" -ForegroundColor Cyan
 Push-Location $Repo
 try {
-  foreach ($t in @('probe-client-run.mjs', 'probe-layout-fix.mjs')) {
+  # 离线静态回归：不需要网络、不碰真实凭据，所以放在这里先跑
+  foreach ($t in @('probe-client-run.mjs', 'probe-layout-fix.mjs', 'probe-auth-renewal.mjs')) {
     & $Node $t *> $null
     if ($LASTEXITCODE -ne 0) { throw "$t 失败" }
     Write-Host "  ✓ $t"
@@ -116,7 +117,16 @@ function Set-VersionInFile {
   $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
   $text = [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false))
   $new = [regex]::Replace($text, $Pattern, $Replacement)
-  if ($new -eq $text) { throw "未能替换 $Path 中的版本号（模式：$Pattern）" }
+  # 脚本可重入：上一次发版在中途失败（比如 git 身份没配），重跑时版本号已经是目标值。
+  # 这种情况不算错误，直接跳过写入，否则重跑会在第 3 步就抛「未能替换」。
+  if ($new -eq $text) {
+    $m = [regex]::Match($text, $Pattern)
+    if ($m.Success -and $m.Value.Contains($Version)) {
+      Write-Host "  $(Split-Path -Leaf $Path) 已是 $Version，跳过"
+      return
+    }
+    throw "未能替换 $Path 中的版本号（模式：$Pattern）"
+  }
   [System.IO.File]::WriteAllText($Path, $new, [System.Text.UTF8Encoding]::new($hasBom))
 }
 
@@ -129,11 +139,23 @@ Write-Host "  package.json version = $live"
 
 Write-Host "=== 4/6 提交并打 tag ===" -ForegroundColor Cyan
 $msg = if ($Note) { "v${Version}: $Note" } else { "v${Version}" }
+# 提交身份：仓库内局部配置优先。历史上这个仓库用的是 DSH Agent <agent@dsh.local>，
+# 但 clone 到新机器时不会有它，git commit 会直接报 "Author identity unknown" 中止发版。
+# 这里在缺失时补上同一身份（只写本仓库，不动全局配置）。
+$identName = (& $Git -C $Repo config --local user.name) 2>$null
+$identMail = (& $Git -C $Repo config --local user.email) 2>$null
+if (-not $identName) { & $Git -C $Repo config --local user.name 'DSH Agent' | Out-Null }
+if (-not $identMail) { & $Git -C $Repo config --local user.email 'agent@dsh.local' | Out-Null }
 & $Git -C $Repo add -A
 & $Git -C $Repo commit -m $msg
 if ($LASTEXITCODE -ne 0) { Write-Host '  没有改动可提交，继续' -ForegroundColor Yellow }
-& $Git -C $Repo tag -a "v$Version" -m $msg
-if ($LASTEXITCODE -ne 0) { throw "打 tag v$Version 失败（可能已存在）" }
+$existingTag = & $Git -C $Repo tag -l "v$Version"
+if ($existingTag) {
+  Write-Host "  tag v$Version 已存在，跳过（重跑发版时正常）" -ForegroundColor Yellow
+} else {
+  & $Git -C $Repo tag -a "v$Version" -m $msg
+  if ($LASTEXITCODE -ne 0) { throw "打 tag v$Version 失败" }
+}
 
 Write-Host "=== 5/6 推送到 GitHub ===" -ForegroundColor Cyan
 & $Git -C $Repo push origin main --tags
