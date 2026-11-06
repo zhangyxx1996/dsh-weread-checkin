@@ -54,6 +54,7 @@ $git = (Get-Command git -ErrorAction SilentlyContinue).Source
 
 # 2. 改完代码、跑完回归测试
 & $node --check client.js
+& $node --check weread-login.js      # v1.3.0 新增，一键获取 Cookie
 & $node probe-client-run.mjs      # 离线渲染
 & $node probe-host.mjs            # Host 接口
 & $node probe-layout-fix.mjs      # 布局约束
@@ -94,7 +95,7 @@ $git = (Get-Command git -ErrorAction SilentlyContinue).Source
 
 | 进版本 | 不进版本（`.gitignore`） |
 |---|---|
-| `index.js` / `client.js` / `weread-api.js` / `weread-verify.js` | `probe-*.mjs` 一次性诊断脚本 |
+| `index.js` / `client.js` / `weread-api.js` / `weread-verify.js` / `weread-login.js` | `probe-*.mjs` 一次性诊断脚本 |
 | `package.json` / `cordis.patch.yml` / `locale/` / `icon.svg` | `_diag.mjs` |
 | `README.md` | `node_modules/`、`*.log` |
 | 回归测试：`probe-client-run.mjs`、`probe-host.mjs`、`probe-layout-fix.mjs`、`probe-auth-renewal.mjs` | |
@@ -113,6 +114,27 @@ $git = (Get-Command git -ErrorAction SilentlyContinue).Source
 > dashboard.month 共用同一个来源**——两段数据在真实后端里描述的是同一天同一个数字，
 > 假数据若让它们互相打架，断言就变成在验证「谁覆盖谁」的偶然结果。
 > 新增断言时别再把日期写成常量。
+
+> 为什么 `weread-login.js` 要单独一个文件：它在 Host 侧 **spawn 浏览器进程**并经 CDP
+> 读 httpOnly cookie（`wr_skey` / `wr_vid` / `wr_rt` 都是 httpOnly，页面 JS 的
+> `document.cookie` 读不到，实测只有 34 字符）。把它塞进 `weread-api.js` 会污染
+> 那个纯粹的接口封装层，也让回归难以隔离。**它只在用户点按钮时才跑**，
+> 平时不占任何资源；插件卸载时 `loginShutdown()` 会把残留窗口一并关掉。
+>
+> 新增它时踩到的两个坑，记下来免得重犯：
+> 1. **CDP 页面级命令在 DSH 沙箱内会全部超时**（`Runtime.evaluate` / `Network.getAllCookies`
+>    一个都不回），而 `Browser.getVersion` 正常。这是沙箱对渲染进程的限制，不是代码问题——
+>    在 `danger-full-access` 下同一脚本一切正常。宿主进程在沙箱外，用户实际使用不受影响，
+>    但**本地验证这条链路必须在 danger-full-access 下跑**。
+> 2. 选 CDP target 必须按 `t.type === 'page' && /^https?:/.test(t.url)`，否则会选中
+>    扩展后台页，cookie 永远读回 0 个。
+
+> `probe-client-run.mjs` 里写新断言时的两个易错点：
+> 1. `peekTree()` / `findNode()` / `flattenText()` 收的是**元素节点**。想拿整个组件的
+>    文本要用 `flattenText(renderTree(comp, {}))`；直接 `peekTree(comp)` 传函数组件
+>    会得到空串，断言静默失败（看起来像「UI 没渲染」）。
+> 2. 定时器已被换成 `fakeSetInterval`（只登记不自动触发）。轮询类逻辑（如一键登录的
+>    1200ms 进度）必须显式 `await fireTimers(1200)` 才会跑，否则永远停在第一帧。
 
 ## 注意
 

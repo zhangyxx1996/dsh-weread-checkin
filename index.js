@@ -12,6 +12,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { runReading, refreshSkey, probeAuth, DEFAULT_BASE } from './weread-api.js';
 import { resolveApiKey, readSnapshot, readDashboard, readHistory, readShelf, readProfile, readNotebooks, readBookmarks, ymdLocal } from './weread-verify.js';
+import { loginStart, loginStatus, loginCancel, loginConsume, loginShutdown, findBrowser } from './weread-login.js';
 
 /** 每天检查一次是否到了自动打卡时间。 */
 const AUTO_TICK_MS = 60 * 1000;
@@ -246,6 +247,52 @@ export function apply(ctx, config = {}) {
           ? '已保存，可以打卡，且能用官方接口核对时长是否真的计入'
           : '已保存，可以打卡了（未配置 API Key，打卡后无法核对时长是否计入）')
         : '已保存，但还缺 Cookie',
+    };
+  }
+
+  /**
+   * 一键获取 Cookie：Host 侧拉起隔离浏览器的扫码登录。
+   *
+   * 前端点一次 → 打开浏览器窗口 → 轮询 loginStatus → 拿到 cookie 后
+   * 直接走 setup 落盘，用户不用再点保存。
+   */
+  async function loginBegin() {
+    const started = await loginStart({});
+    if (!started.ok) return { ok: false, reason: started.reason };
+    return {
+      ok: true,
+      sessionId: started.sessionId,
+      browser: started.browser,
+      message: '已打开浏览器，请用微信扫码登录；完成后会自动填入 Cookie',
+    };
+  }
+
+  async function loginPoll({ sessionId } = {}) {
+    const st = await loginStatus({ sessionId });
+    if (!st.ok || st.state !== 'done' || !st.cookie) return st;
+    const saved = await setup({ cookie: st.cookie });
+    const message = saved.ok
+      ? (saved.message || '已自动填入 Cookie')
+      : (saved.error || 'Cookie 已取得，但保存失败');
+    // 无论成败都抹掉明文：失败时让用户重来一次，比留着旧串反复重试更清楚
+    loginConsume({ sessionId, message });
+    return { ...st, state: saved.ok ? 'saved' : 'failed', saved: Boolean(saved.ok), cookie: undefined, message };
+  }
+
+  async function loginAbort({ sessionId } = {}) {
+    return loginCancel({ sessionId });
+  }
+
+  /** 有没有可用浏览器 —— 前端据此决定按钮是否可点。 */
+  async function loginSupport() {
+    const browser = findBrowser();
+    return {
+      ok: true,
+      available: Boolean(browser),
+      browser: browser ? browser.name : '',
+      reason: browser
+        ? ''
+        : '没有找到 Edge / Chrome。可先装一个，或用下方的手动方式粘贴 Cookie。',
     };
   }
 
@@ -899,6 +946,7 @@ export function apply(ctx, config = {}) {
     checkin, stop, renew, status, setup, setupAuto, setupMinutes, setupGoal,
     today, dashboard, badge: badgeSafe, history, shelf,
     profile, notebooks, bookmarks,
+    loginBegin, loginPoll, loginAbort, loginSupport,
   };
   if (ctx.webServer) {
     ctx.effect(() => ctx.webServer.register({
@@ -938,6 +986,8 @@ export function apply(ctx, config = {}) {
     if (tickTimer) clearInterval(tickTimer);
     // 卸载时把长跑中的打卡也掐掉，否则无限模式会一直挂着
     if (runAbort) runAbort.abort();
+    // 一键登录留下的浏览器窗口也要关掉，别变成孤儿进程
+    loginShutdown();
   }, 'weread cleanup');
 
   load();

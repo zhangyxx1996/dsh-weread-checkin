@@ -111,6 +111,18 @@ const responses = {
   setupGoal: { ok: true, goalMinutes: 20, message: '每日目标已设为 20 分钟' },
   setupAuto: { ok: true, autoTime: '09:15', message: '已设为每天 09:15 自动打卡' },
   renew: { ok: true, reason: '' },
+  // v1.3.0 一键获取 Cookie
+  loginSupport: { ok: true, available: true, browser: 'Edge', reason: '' },
+  loginBegin: { ok: true, sessionId: 'login-test-1', browser: 'Edge', message: '已打开浏览器，请用微信扫码登录；完成后会自动填入 Cookie' },
+  /**
+   * 登录轮询：默认一直 waiting，由测试逐次改写 loginPollSeq 来模拟
+   * waiting → saved 的推进。写成函数才能按调用次数返回不同结果。
+   */
+  loginPoll: () => {
+    const next = loginPollSeq.length ? loginPollSeq.shift() : { ok: true, state: 'waiting', message: '已打开浏览器，请用微信扫码登录' };
+    return next;
+  },
+  loginAbort: { ok: true },
   /**
    * 历史日级序列（2026-01-01 至今），供日历翻看历史用。
    *
@@ -250,6 +262,8 @@ const onceFailures = new Map();
  * 用户看到的是**另一本书的划线**——错数据，不是样式问题。
  */
 const delays = new Map();
+/** 登录轮询的脚本化返回序列：每次 /loginPoll 消费一条。 */
+let loginPollSeq = [];
 async function fakeFetch(url, opts) {
   requested.push(url);
   allRequested.push(url);
@@ -279,8 +293,33 @@ async function fakeFetch(url, opts) {
 }
 
 // ---------- 执行 client.js ----------
+/**
+ * 定时器登记表：把 setInterval 换成「只登记不自动触发」。
+ *
+ * 真实环境里轮询靠时间推进，测试里时间不会自己走，所以要能手动 fireTimers()。
+ * 不直接替换成 `() => 0`，是因为一键登录的进度全靠 1200ms 轮询驱动，
+ * 没有可触发的 timer 就没法断言「扫码完成后自动填入」这条路径。
+ */
+const timers = new Map();
+let timerSeq = 0;
+function fakeSetInterval(cb, ms) {
+  timerSeq += 1;
+  timers.set(timerSeq, { cb, ms });
+  return timerSeq;
+}
+function fakeClearInterval(id) { timers.delete(id); }
+/** 触发所有间隔为 ms 的定时器各一次（不传则全触发）。 */
+async function fireTimers(ms) {
+  for (const [id, t] of [...timers]) {
+    if (!timers.has(id)) continue;        // 期间被 clearInterval 掉的跳过
+    if (ms !== undefined && t.ms !== ms) continue;
+    t.cb();
+  }
+  await tick();
+}
+
 const fn = new Function('window', 'document', 'fetch', 'setInterval', 'clearInterval', 'console', src);
-fn(globalThis.window, document, fakeFetch, () => 0, () => {}, console);
+fn(globalThis.window, document, fakeFetch, fakeSetInterval, fakeClearInterval, console);
 
 assert.ok(loaded, 'client.js 没有调用 __ModuleLoader__.load');
 assert.strictEqual(loaded.id, 'dsh-weread-checkin');
@@ -1154,6 +1193,84 @@ function collectCells(node, acc = []) {
   assert.strictEqual(seen, 'changed',
     'useRef 没跨渲染保留对象 —— 模拟器把 ref 每次重置了，ref 锁类断言会假阴性');
   console.log('✓ 模拟器 useRef 跨渲染保留（ref 锁断言可信）');
+}
+
+// 19) v1.3.0：一键获取 Cookie 全流程
+{
+  const count = (m) => requested.filter((u) => u.endsWith('/' + m)).length;
+  // 渲染整棵树摊成文本；Settings 的 hook 槽位已存在，重渲染不会丢状态
+  const settingsText = () => flattenText(renderTree(settingsComp, {}));
+
+  // 19a) 进设置页只探能力，不该真的拉起浏览器
+  requested.length = 0;
+  stores.delete(settingsComp);   // 模拟首次进入
+  await settle(settingsComp, {}, 3);
+  assert.ok(requested.some((u) => u.endsWith('/loginSupport')), '进设置页应探测一次 /loginSupport');
+  assert.ok(!requested.some((u) => u.endsWith('/loginBegin')),
+    '进设置页不该预取 /loginBegin —— 会凭空弹出浏览器窗口');
+  assert.ok(renderTree(settingsComp, {}) && settingsText().includes('一键获取 Cookie'),
+    '设置页应有「一键获取 Cookie」区域');
+  assert.ok(settingsText().includes('Edge'), '应显示将用哪个浏览器打开');
+  console.log('✓ 一键获取 → 进页面只探能力，不弹窗口');
+
+  // 19b) 点「打开网页登录」→ 请求 loginBegin，按钮换「取消」
+  requested.length = 0;
+  clickButton(settingsComp, {}, '打开网页登录', { exact: true });
+  await settle(settingsComp, {}, 3);
+  assert.strictEqual(count('loginBegin'), 1, '点一次应只请求 1 次 /loginBegin');
+  assert.ok(settingsText().includes('已打开浏览器，请用微信扫码登录'),
+    '应显示「已打开浏览器，请用微信扫码登录」');
+  const cancelBtn = findNode(renderTree(settingsComp, {}), (n) => n.type === 'button'
+    && flattenText(n).includes('取消'));
+  assert.ok(cancelBtn, '等待扫码期间应出现「取消」按钮');
+  console.log('✓ 一键获取 → 点击后请求 /loginBegin，按钮变「取消」');
+
+  // 19c) 轮询到 saved → 自动刷新状态与提示
+  loginPollSeq = [{ ok: true, state: 'saved', message: '已自动填入 Cookie' }];
+  requested.length = 0;
+  await fireTimers(1200);
+  await settle(settingsComp, {}, 3);
+  assert.strictEqual(count('loginPoll'), 1, `应轮询 1 次 /loginPoll，实际 ${count('loginPoll')} 次`);
+  assert.ok(count('status') >= 1, '拿到 Cookie 后必须 refresh 一次 /status');
+  assert.ok(settingsText().includes('已自动填入 Cookie'), '应显示成功提示');
+  assert.ok(settingsText().includes('重新获取'), '已完成后按钮应变成「重新获取」');
+  console.log('✓ 一键获取 → 扫码完成自动填入并刷新状态');
+
+  // 19d) 取消 → 结束会话，不发多余轮询
+  requested.length = 0;
+  clickButton(settingsComp, {}, '重新获取', { exact: true });
+  await settle(settingsComp, {}, 3);
+  assert.strictEqual(count('loginBegin'), 1, '再次获取应重新请求 /loginBegin');
+  clickButton(settingsComp, {}, '取消', { exact: true });
+  await settle(settingsComp, {}, 3);
+  assert.ok(requested.some((u) => u.endsWith('/loginAbort')), '点取消应请求 /loginAbort');
+  assert.ok(settingsText().includes('打开网页登录'), '取消后按钮应回到「打开网页登录」');
+  console.log('✓ 一键获取 → 取消结束会话并复位按钮');
+}
+
+// 20) v1.3.0：本机没有可用浏览器时按钮禁用并说明原因
+{
+  const backup = responses.loginSupport;
+  responses.loginSupport = {
+    ok: true, available: false, browser: '',
+    reason: '没有找到可用的浏览器。请先安装 Edge 或 Chrome，再用下方的手动方式粘贴 Cookie。',
+  };
+  try {
+    stores.delete(settingsComp);
+    await settle(settingsComp, {}, 3);
+    const tree = renderTree(settingsComp, {});
+    const btn = findNode(tree, (n) => n.type === 'button'
+      && flattenText(n).includes('打开网页登录'));
+    assert.ok(btn, '没有浏览器时按钮仍然要在，只是禁用');
+    assert.strictEqual(btn.props.disabled, true, '没有可用浏览器时按钮必须 disabled');
+    const text = flattenText(renderTree(settingsComp, {}));
+    assert.ok(text.includes('没有找到可用的浏览器'), '应把具体原因显示给用户，而不是静默禁用');
+    console.log('✓ 一键获取 → 无可用浏览器时按钮禁用并给出原因');
+  } finally {
+    responses.loginSupport = backup;
+    stores.delete(settingsComp);
+    await settle(settingsComp, {}, 2);
+  }
 }
 
 console.log('\n请求过的接口:', [...new Set(allRequested.map((u) => u.split('/').pop()))].join(', '));

@@ -1,4 +1,4 @@
-﻿# 微信读书打卡（dsh-weread-checkin）
+# 微信读书打卡（dsh-weread-checkin）
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![DSH](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
@@ -91,9 +91,14 @@ Get-ChildItem 'D:\DSH工作区\微信读书插件' -Filter package.json
 
 ### 第四步：配凭据（二选一）
 
-**方式 A：界面里重填**（推荐换机器时用）
+**方式 A：一键自动获取**（推荐）
 
-点左侧栏书本图标 → 右下角「设置」→ 粘贴 Cookie 与 API Key → 保存。
+点左侧栏书本图标 → 右下角「设置」→ 在「一键获取 Cookie」那里点「打开网页登录」，
+会弹出一个**独立的浏览器窗口**（Edge 或 Chrome，用你本机已装的），用微信扫码登录微信读书。
+扫完码窗口自动关闭，Cookie 自动填好并保存，不用抓包。
+
+> 这个窗口用的是临时 profile，**不会碰你日常浏览器的书签、登录态与历史**；
+> 关窗口或点「取消」都会把临时目录一起清掉。只支持 Windows / macOS 上的 Edge 或 Chrome。
 
 **方式 B：拷旧机器的文件**（保留每日目标、打卡时长、自动打卡时间）
 
@@ -129,14 +134,16 @@ Get-ChildItem 'D:\DSH工作区\微信读书插件' -Filter package.json
 ## 快速开始
 
 1. 点左侧栏的书本图标 → 面板右下角「设置」
-2. 浏览器打开 [weread.qq.com](https://weread.qq.com) 并确认已登录
-3. `F12` → Network → 过滤 `read` → 随便翻一页书，出现 `/web/book/read` 请求
-4. 右键那条请求 → Copy → **Copy as cURL (bash)**
-5. 整段粘进插件设置页的 Cookie 框 → 保存
+2. 在「一键获取 Cookie」里点「打开网页登录」，弹出的窗口里用微信扫码
+3. 扫完码窗口自动关闭，Cookie 自动填好 → 点「立即打卡」
 
-就这么两步。Cookie 保存在本机 `~/.dsh/weread-credentials.json`，不会写进插件配置、也不会传给任何第三方。
+就这两步。Cookie 保存在本机 `~/.dsh/weread-credentials.json`，不会写进插件配置、也不会传给任何第三方。
 
-**wr_skey 约 90 分钟过期**，插件会自动续期；整体登录态约 30 天，届时重新粘一次即可。
+没有 Edge / Chrome、或窗口起不来时，走手动方式：浏览器打开 [weread.qq.com](https://weread.qq.com) 并确认已登录 →
+`F12` → Network → 过滤 `read` → 随便翻一页书，出现 `/web/book/read` 请求 →
+右键 → Copy → **Copy as cURL (bash)** → 整段粘进 Cookie 框 → 保存。
+
+**wr_skey 约 90 分钟过期**，插件会自动续期；整体登录态约 30 天，届时重新获取一次即可。
 
 ## 原理
 
@@ -214,6 +221,10 @@ Get-ChildItem 'D:\DSH工作区\微信读书插件' -Filter package.json
 打开 **设置 → 插件 → 微信读书打卡**：
 
 ### ① Cookie（必需）
+
+**最省事：点插件设置页里的「打开网页登录」**，扫码后自动填入，跳过下面全部步骤。
+
+手动抓包（换机、或本机没有 Edge/Chrome 时用）：
 
 1. 浏览器打开 https://weread.qq.com/ 并确认已登录
 2. F12 → Network → 过滤 `read` → 点 `https://weread.qq.com/web/book/read`

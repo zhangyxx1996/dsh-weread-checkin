@@ -86,7 +86,7 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
 }
 
 Write-Host "=== 1/6 语法校验 ===" -ForegroundColor Cyan
-foreach ($f in @('index.js', 'client.js', 'weread-api.js', 'weread-verify.js')) {
+foreach ($f in @('index.js', 'client.js', 'weread-api.js', 'weread-verify.js', 'weread-login.js')) {
   & $Node --check (Join-Path $Repo $f)
   if ($LASTEXITCODE -ne 0) { throw "$f 语法错误" }
   Write-Host "  ✓ $f"

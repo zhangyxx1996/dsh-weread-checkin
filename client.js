@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.2.1';
+    const PLUGIN_VERSION = '1.3.0';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */
@@ -241,6 +241,15 @@ window.__ModuleLoader__.load({
 .wr-btn-ghost:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
 .wr-btn-ghost:disabled { opacity: .45; cursor: default; }
 .wr-btn-sm { padding: 5px 11px; font-size: 12px; }
+/* 一键获取：一整块独立区域，和下面的手动粘贴区分开 */
+.wr-login-box {
+  padding: 11px 13px; border-radius: 10px;
+  border: 1px dashed var(--dsw-alias-border-l2);
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-2) 55%, transparent);
+}
+.wr-login-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 9px; }
+.wr-login-msg { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.wr-login-hint { font-size: 12px; text-align: right; }
 /* 运行中的「继续打卡」按钮：外观是禁用的灰色，但其实是可点的「停止打卡」 */
 .wr-btn-run,
 .wr-btn-run:disabled {
@@ -1889,6 +1898,109 @@ window.__ModuleLoader__.load({
           .finally(() => setBusy(false));
       }, [cookieText, baseText, apiKeyText, refresh]);
 
+      /*
+       * 一键获取 Cookie：Host 侧拉起隔离浏览器窗口，用户扫码，拿到 httpOnly
+       * cookie 后自动落盘。这里只负责发起和轮询 —— 真正读 cookie 的是 Host。
+       *
+       * 轮询用 ref 存 timer，组件卸载要清掉，否则设置页切走还在后台打接口。
+       */
+      const [loginState, setLoginState] = React.useState('idle'); // idle|waiting|saved|failed
+      const [loginMsg, setLoginMsg] = React.useState('');
+      const [loginSupportInfo, setLoginSupportInfo] = React.useState(null);
+      const loginBusyRef = React.useRef(false);
+      const loginTimerRef = React.useRef(null);
+      const loginSessionRef = React.useRef('');
+
+      const stopLoginPoll = React.useCallback(() => {
+        if (loginTimerRef.current) {
+          clearInterval(loginTimerRef.current);
+          loginTimerRef.current = null;
+        }
+      }, []);
+
+      React.useEffect(() => () => {
+        stopLoginPoll();
+        const sid = loginSessionRef.current;
+        if (sid) call('loginAbort', { sessionId: sid }).catch(() => {});
+      }, [stopLoginPoll]);
+
+      React.useEffect(() => {
+        call('loginSupport').then(setLoginSupportInfo).catch(() => setLoginSupportInfo(null));
+      }, []);
+
+      const pollLogin = React.useCallback((sessionId) => {
+        stopLoginPoll();
+        loginTimerRef.current = setInterval(() => {
+          call('loginPoll', { sessionId })
+            .then((r) => {
+              if (r?.state === 'saved') {
+                stopLoginPoll();
+                loginBusyRef.current = false;
+                setLoginState('saved');
+                setLoginMsg(r.message || '已自动填入 Cookie');
+                setNotice({ kind: 'ok', text: r.message || '已自动填入 Cookie' });
+                refresh();
+                return;
+              }
+              if (!r?.ok || r?.state === 'failed' || r?.state === 'unknown') {
+                stopLoginPoll();
+                loginBusyRef.current = false;
+                setLoginState('failed');
+                const text = r?.message || '登录没有完成，请重试';
+                setLoginMsg(text);
+                setNotice({ kind: 'err', text });
+                return;
+              }
+              if (r?.message) setLoginMsg(r.message);
+            })
+            .catch((e) => {
+              stopLoginPoll();
+              loginBusyRef.current = false;
+              setLoginState('failed');
+              setLoginMsg(String(e?.message ?? e));
+            });
+        }, 1200);
+      }, [refresh, stopLoginPoll]);
+
+      const startLogin = React.useCallback(() => {
+        // ref 判定：按钮 disabled 要等重渲染才生效，同一 tick 连点仍会开两个窗口
+        if (loginBusyRef.current) return;
+        loginBusyRef.current = true;
+        stopLoginPoll();
+        setLoginState('waiting');
+        setLoginMsg('正在打开浏览器…');
+        setNotice(null);
+        call('loginBegin', {})
+          .then((r) => {
+            if (!r?.ok) {
+              loginBusyRef.current = false;
+              setLoginState('failed');
+              setLoginMsg(r?.reason || '打开浏览器失败');
+              setNotice({ kind: 'err', text: r?.reason || '打开浏览器失败' });
+              return;
+            }
+            loginSessionRef.current = r.sessionId;
+            setLoginMsg(r.message || '已打开浏览器，请扫码登录');
+            pollLogin(r.sessionId);
+          })
+          .catch((e) => {
+            loginBusyRef.current = false;
+            setLoginState('failed');
+            setLoginMsg(String(e?.message ?? e));
+            setNotice({ kind: 'err', text: String(e?.message ?? e) });
+          });
+      }, [pollLogin, stopLoginPoll]);
+
+      const cancelLogin = React.useCallback(() => {
+        const sid = loginSessionRef.current;
+        stopLoginPoll();
+        loginBusyRef.current = false;
+        setLoginState('idle');
+        setLoginMsg('');
+        if (sid) call('loginAbort', { sessionId: sid }).catch(() => {});
+        loginSessionRef.current = '';
+      }, [stopLoginPoll]);
+
       const hasCookie = Boolean(status?.hasCookie);
       const hasBase = Boolean(status?.hasBase);
       const canVerify = Boolean(status?.canVerify);
@@ -1952,6 +2064,31 @@ window.__ModuleLoader__.load({
               onClick: renew,
             }, renewing ? '刷新中…' : '刷新密钥')),
           h('div', { className: 'wr-group' },
+            // 一键获取：放最上面，因为它就是「不想手动抓包」的人的第一诉求
+            h('div', { className: 'wr-field wr-login-box' },
+              h('div', { className: 'wr-row' },
+                h('span', { className: 'wr-row-label' }, '一键获取 Cookie'),
+                h('span', { className: 'wr-row-value wr-login-hint' },
+                  loginSupportInfo && loginSupportInfo.available === false
+                    ? (loginSupportInfo.reason || '不可用')
+                    : `用 ${loginSupportInfo?.browser || '本机浏览器'} 打开登录页，扫码后自动填入`)),
+              h('div', { className: 'wr-login-actions' },
+                loginState === 'waiting'
+                  ? h('button', {
+                    type: 'button', className: 'wr-btn-ghost wr-btn-sm', onClick: cancelLogin,
+                  }, '取消')
+                  : h('button', {
+                    type: 'button', className: 'wr-btn wr-btn-sm',
+                    disabled: loginSupportInfo ? loginSupportInfo.available === false : false,
+                    onClick: startLogin,
+                  }, loginState === 'saved' ? '重新获取' : '打开网页登录'),
+                loginMsg
+                  ? h('span', {
+                    className: 'wr-login-msg ' + (loginState === 'failed' ? 'wr-err' : (loginState === 'saved' ? 'wr-ok' : '')),
+                  }, loginMsg)
+                  : null),
+              h('div', { className: 'wr-hint' },
+                '会新开一个独立的浏览器窗口，不碰你日常的书签与登录态；扫完码自动关闭。')),
             h('div', { className: 'wr-field' },
               h('label', { className: 'wr-label', htmlFor: 'wr-cookie' },
                 'Cookie ',
@@ -1990,6 +2127,9 @@ window.__ModuleLoader__.load({
         h('div', { className: 'wr-section' },
           h('div', { className: 'wr-section-title' }, h('span', null, '怎么获取 Cookie')),
           h('div', { className: 'wr-group wr-group-pad' },
+            h('div', { className: 'wr-hint' },
+              '方式一（推荐）：点上面的「打开网页登录」，用微信扫码。插件会拿到登录态并自动填好，不用抓包。'),
+            h('div', { className: 'wr-hint' }, '方式二（手动，换机或浏览器起不来时用）：'),
             h('ol', { className: 'wr-ol' },
               h('li', null, '浏览器打开 weread.qq.com 并确认已登录'),
               h('li', null, 'F12 → Network → 过滤 read → 点 /web/book/read 那条请求（随便翻一页书即可产生）'),
@@ -1999,7 +2139,7 @@ window.__ModuleLoader__.load({
               '只需要 Cookie。上报用的书籍标识与设备字段由插件内置的实测模板提供，'
               + '服务端不逐字段校验，只要组合曾真实产生过就能通过。凭据保存在本机，不写进插件配置。'),
             h('div', { className: 'wr-hint' },
-              'wr_skey 约 90 分钟过期，插件会自动续期；整体登录态约 30 天，届时需重新粘贴一次。'))),
+              'wr_skey 约 90 分钟过期，插件会自动续期；整体登录态约 30 天，届时需重新获取一次。'))),
 
         // 版本
         h('div', { className: 'wr-section' },
