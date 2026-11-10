@@ -5,7 +5,7 @@
 
 在 [DeepSeek Harness](https://github.com/deepseek-ai) 里完成微信读书每日打卡：手动一键、每天定时、或让 AI 代劳。
 
-当前版本 **v1.2.1**（版本号会自动显示在插件面板底部与设置页「关于」里）。
+当前版本 **v1.3.1**（版本号会自动显示在插件面板底部与设置页「关于」里）。
 
 > **只需要一次 Cookie，不需要抓包。** 上报模板有内置兜底，粘一次 Cookie 就能用。
 
@@ -26,14 +26,14 @@
 1. 在浏览器地址栏粘贴这一行，回车：
 
    ```
-   https://codeload.github.com/zhangyxx1996/dsh-weread-checkin/zip/refs/tags/v1.2.1
+   https://codeload.github.com/zhangyxx1996/dsh-weread-checkin/zip/refs/tags/v1.3.1
    ```
 
-   它会**直接开始下载**一个约 80 KB 的文件 `dsh-weread-checkin-1.2.1.zip`（不会跳转到别的页面）。
+   它会**直接开始下载**一个约 80 KB 的文件 `dsh-weread-checkin-1.3.1.zip`（不会跳转到别的页面）。
 
 2. 打开「下载」文件夹，右键这个 zip → **全部解压缩**（Windows 自带，不用装 WinRAR / 7-Zip）。
 
-3. 解压出来是一个名为 `dsh-weread-checkin-1.2.1` 的文件夹，里面应该能直接看到
+3. 解压出来是一个名为 `dsh-weread-checkin-1.3.1` 的文件夹，里面应该能直接看到
    `package.json`、`index.js`、`client.js` 这几个文件。
    **如果打开后里面还套着一层同名文件夹，说明多套了一层，把里面那层拿出来用。**
 
@@ -48,7 +48,7 @@
 > 缺点：zip 是某个版本的定版快照，没有 git 历史。以后想看改了什么、或者想回滚，
 > 只能重新下另一个版本的 zip。
 >
-> 想拿**当前最新代码**而不是定版，把上面链接里的 `tags/v1.2.1` 换成 `heads/main` 即可：
+> 想拿**当前最新代码**而不是定版，把上面链接里的 `tags/v1.3.1` 换成 `heads/main` 即可：
 > `https://codeload.github.com/zhangyxx1996/dsh-weread-checkin/zip/refs/heads/main`
 > （下载的文件名会变成 `dsh-weread-checkin-main.zip`）。想更新时重新下一遍、解压覆盖原目录即可。
 
@@ -303,3 +303,19 @@ Get-ChildItem 'D:\DSH工作区\微信读书插件' -Filter package.json
 - 不要在别的浏览器重新扫码登录，会使当前 Cookie 提前失效
 - 计时以「当日阅读统计」为准，不是单本书的 `readingTime`
 - 仅供学习研究，存在账号风险，请自行评估
+
+## 独立桌面客户端（可选）
+
+除了作为 DSH 插件运行，本仓库还带一个**独立的 Windows 桌面客户端**，界面与功能完全复刻本插件，
+不依赖 DSH 就能双击运行。源码在 [`desktop/`](desktop/)，说明见 [desktop/README.md](desktop/README.md)。
+
+```powershell
+cd desktop
+pnpm install          # 只需一次，装 electron
+node build.mjs        # 打出便携版，产物在 desktop\dist\微信读书打卡
+```
+
+⚠️ **打包产物不要放在 `D:\DSH工作区` 这类工作区目录下运行**：那类目录带可继承的 Low
+完整性级别标签，复制进去的 exe 会继承 Low IL，Electron 的 GUI 模式一启动就
+`EXCEPTION_BREAKPOINT` 秒退（控制台模式 `ELECTRON_RUN_AS_NODE=1` 反倒正常）。
+放到普通目录（例如 `D:\微信读书打卡`）即可，详见 desktop/README.md。
