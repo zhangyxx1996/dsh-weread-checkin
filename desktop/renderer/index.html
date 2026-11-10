@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>微信读书打卡</title>
+
+<!-- 从 DSH 主题里抽出的三段变量：静态色板 / 亮色 alias / 暗色 alias -->
+<link rel="stylesheet" href="/theme/palette.css" />
+<link rel="stylesheet" href="/theme/light.css" />
+<link rel="stylesheet" href="/theme/dark.css" />
+
+<style>
+  /* 插件 CSS 不含 html/body 规则，外壳这几条自己写 */
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--dsw-alias-bg-base, #fff);
+    color: var(--dsw-alias-label-primary, #0f1115);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  #root { height: 100%; }
+
+  .app { display: flex; height: 100%; }
+
+  /* 左侧栏：仿 DSH 的窄图标栏 */
+  .app-rail {
+    flex: 0 0 56px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 0 14px;
+    background: var(--dsw-specific-sidebar-fill, #f9fafb);
+    border-right: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.04));
+    -webkit-app-region: drag;
+  }
+  .app-rail > * { -webkit-app-region: no-drag; }
+  .app-rail-brand {
+    width: 30px; height: 30px; border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--dsw-alias-brand-primary, #0f1115);
+    color: var(--dsw-alias-bg-base, #fff);
+    font-size: 14px; font-weight: 600; letter-spacing: .5px;
+    margin-bottom: 6px;
+    user-select: none;
+  }
+  .app-rail-btn {
+    position: relative;
+    width: 38px; height: 38px;
+    display: flex; align-items: center; justify-content: center;
+    border: 0; padding: 0; margin: 0;
+    background: transparent;
+    color: var(--dsw-alias-label-secondary, #6b7280);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background .16s, color .16s;
+  }
+  .app-rail-btn:hover { background: var(--dsw-alias-bg-layer-2, #f3f4f6); color: var(--dsw-alias-label-primary, #0f1115); }
+  .app-rail-btn.is-active {
+    background: var(--dsw-alias-bg-layer-2, #f3f4f6);
+    color: var(--dsw-alias-label-primary, #0f1115);
+  }
+  .app-rail-btn-sub { color: var(--dsw-alias-label-secondary, #6b7280); }
+  .app-rail-spacer { flex: 1 1 auto; }
+
+  /* 主区：滚动交给内层 .wr-page，这里只负责撑满 */
+  .app-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; background: var(--dsw-alias-bg-base, #fff); }
+  .app-scroll { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+
+  .app-fallback { padding: 40px; text-align: center; color: var(--dsw-alias-label-secondary, #6b7280); }
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<!-- 1. CommonJS 垫片 + __ModuleLoader__ 桩 -->
+<script src="/renderer/bootstrap.js"></script>
+
+<!-- 2. React 的四个 production 构建（服务端把它们包成 __cjs.define） -->
+<script src="/vendor/scheduler.js"></script>
+<script src="/vendor/react.js"></script>
+<script src="/vendor/react-dom.js"></script>
+<script src="/vendor/react-dom-client.js"></script>
+
+<!-- 3. 插件前端：一个字节都不改 -->
+<script src="/plugin/client.js"></script>
+
+<!-- 4. 外壳：取插件注册的槽位并渲染 -->
+<script src="/renderer/app.js"></script>
+
+</body>
+</html>

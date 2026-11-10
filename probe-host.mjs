@@ -6,7 +6,7 @@
  *
  * 用法：node probe-host.mjs
  */
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +39,37 @@ const ctx = {
     return () => dispose?.();
   },
 };
+
+/*
+ * 僵尸状态回归（v1.3.1 新增）。
+ *
+ * 上一轮打卡跑到一半进程被强杀 / DSH 重启 / 电脑休眠关机，磁盘上就会留下
+ * `running: true`。旧代码拿它当「已有任务在跑」的守卫，而 stop() 又要求内存里
+ * 有真的 runAbort，于是开不了新任务也停不掉旧任务，双向锁死。
+ *
+ * 这里在 apply() **之前**埋一份带 running:true 的状态，验证 load() 会自愈：
+ *   1. status().running 必须是 false
+ *   2. progress.phase 必须是 idle
+ *   3. 状态文件里那个脏值必须被顺手写回 false（否则下一轮又读回来）
+ *   4. stop() 必须回「当前没有正在进行的打卡」，而不是假装停成功
+ */
+const ZOMBIE = {
+  running: true,
+  lastRunAt: Date.now() - 26 * 3600 * 1000,
+  lastDone: 120,
+  lastDay: '2000-01-01',
+  lastErrors: [],
+  autoTime: '04:00',
+  minutes: 60,
+  goalMinutes: 60,
+  // 故意设成「今天」+ 名额已满：验证自愈时会把被僵尸吃掉的补跑次数还回来
+  autoDay: (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })(),
+  autoAttempts: 3,
+};
+await writeFile(stateFile, JSON.stringify(ZOMBIE), 'utf8');
 
 mod.apply(ctx, { stateFile });
 await new Promise((r) => setTimeout(r, 300));
@@ -75,6 +106,26 @@ function safe(t) { try { return JSON.parse(t); } catch { return t; } }
 const st = await invoke('status');
 console.log('\n=== status ===');
 console.log(JSON.stringify(st.json, null, 2));
+
+console.log('\n=== 僵尸 running 自愈（v1.3.1 新增） ===');
+const persisted = JSON.parse(await readFile(stateFile, 'utf8'));
+const zombieOk = st.json.running === false;
+const phaseOk = st.json.progress?.phase === 'idle';
+const cleanOk = persisted.running === false;
+const stopRes = (await invoke('stop')).json;
+const stopOk = stopRes.ok === false;
+// 僵尸标志吃掉过的当天补跑名额必须还回来，否则今天彻底打不上卡
+const quotaOk = persisted.autoAttempts === 0;
+console.log('落盘的 running 被清成 false:', cleanOk);
+console.log('当天 autoAttempts 清零（3 → 0）:', quotaOk, '| 实际 =', persisted.autoAttempts);
+console.log('status().running === false:', zombieOk);
+console.log("status().progress.phase === 'idle':", phaseOk);
+console.log('stop() 不假装停成功:', stopOk, '|', stopRes.reason);
+if (!(zombieOk && phaseOk && cleanOk && stopOk && quotaOk)) {
+  console.error('\n✗ 僵尸状态没有自愈：开不了新打卡也停不掉旧打卡');
+  await rm(stateFile, { force: true }).catch(() => {});
+  process.exit(1);
+}
 
 const dash = await invoke('dashboard');
 console.log('\n=== dashboard ===');

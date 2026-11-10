@@ -149,12 +149,38 @@ export function apply(ctx, config = {}) {
    * runReading 内部的 30 秒 sleep（中止后它会抛出「已取消」，被 catch 收住）。
    */
   let runAbort = null;
+  /**
+   * 本进程里是否真有一轮打卡在跑。**这是唯一的判据**，不能用从磁盘读回的
+   * `state.running` —— 进程被强杀 / DSH 重启 / 电脑休眠关机时，那一轮没有任何
+   * 机会走 finally 收尾，文件里就会留下 `running: true` 的僵尸标志。
+   *
+   * 拿僵尸标志当守卫的后果是双向锁死：checkin 永远回「已有打卡任务在运行」，
+   * stop 又因为 runAbort 是 null 回「当前没有正在进行的打卡」，用户既开不了
+   * 新的一轮也停不掉。v1.3.1 之前就踩过。
+   */
+  let inFlight = false;
 
   async function load() {
     try {
       Object.assign(state, JSON.parse(await readFile(file, 'utf8')));
     } catch {
       // 首次运行没有状态文件
+    }
+    /*
+     * 磁盘上的 running 只可能是「上一轮没来得及收尾」的残留：新进程里一个
+     * runAbort 都没有，任何真实任务都还没开始。留着它会让 checkin 永远被判成
+     * 「已有打卡任务在运行」，而 stop 又找不到可中止的对象。
+     * 这里直接清掉，并在脏值存在时顺手写回，免得下一轮又读回来。
+     *
+     * 同时把当天的 autoAttempts 归零：旧代码在启动前就 +1，僵尸标志会把
+     * 「到点补跑」的三个名额全部吃掉，而当天一次都没真的跑过。既然这些尝试
+     * 没有对应任何真实任务，名额就该还回去，否则用户今天彻底打不上卡。
+     */
+    if (state.running) {
+      state.running = false;
+      inFlight = false;
+      if (state.autoDay === ymdLocal(new Date())) state.autoAttempts = 0;
+      await save();
     }
   }
   async function save() {
@@ -392,8 +418,9 @@ export function apply(ctx, config = {}) {
     if (!base || typeof base !== 'object') {
       return { ok: false, reason: '缺少上报模板，且内置模板也没加载成功', done: 0 };
     }
-    if (state.running) return { ok: false, reason: '已有打卡任务在运行', done: 0 };
+    if (inFlight) return { ok: false, reason: '已有打卡任务在运行', done: 0 };
 
+    inFlight = true;
     state.running = true;
     const apiKey = await apiKeyNow();
     const goalMin = goalNow();
@@ -419,6 +446,7 @@ export function apply(ctx, config = {}) {
       } else {
         const remainSec = goalSec - (todayBefore ?? 0);
         if (before?.ok && remainSec <= 0) {
+          inFlight = false;
           state.running = false;
           await save();
           return {
@@ -491,6 +519,7 @@ export function apply(ctx, config = {}) {
       state.lastDone = result.done;
       state.lastErrors = result.errors;
       state.lastDay = ymdLocal(new Date());
+      inFlight = false;
       state.running = false;
       // 只有请求层面确实错了才留红点；「上报被接受但时长没涨」不算硬失败。
       // 用户主动停止也不算失败，否则侧边栏会误亮红点。
@@ -527,6 +556,7 @@ export function apply(ctx, config = {}) {
             : undefined),
       };
     } catch (err) {
+      inFlight = false;
       state.running = false;
       runAbort = null;
       state.lastErrors = [err.message];
@@ -543,7 +573,9 @@ export function apply(ctx, config = {}) {
    * 中止信号会让 runReading 里 30 秒的 sleep 立刻抛错，所以能秒停，不用等当前这一轮。
    */
   function stop() {
-    if (!state.running || !runAbort) {
+    // 只认内存里的在跑标记：磁盘上的 state.running 可能是上次进程被强杀留下的
+    // 僵尸值，拿它当判据会让「停止」对着一个并不存在的任务空转。
+    if (!inFlight || !runAbort) {
       return { ok: false, reason: '当前没有正在进行的打卡' };
     }
     runAbort.abort();
@@ -577,7 +609,9 @@ export function apply(ctx, config = {}) {
       baseFromBuiltin: !stored.base,
       // 有 API Key 才能验证时长是否真的计入
       canVerify: Boolean(await apiKeyNow()),
-      running: state.running,
+      // 用内存里的在跑标记，不用持久化的 state.running：后者可能是上次进程被强杀
+      // 留下的僵尸值，前端会据此一直轮询、并把主按钮锁成「停止打卡」。
+      running: inFlight,
       lastRunAt: state.lastRunAt,
       lastDay: state.lastDay,
       lastDone: state.lastDone,
@@ -629,7 +663,9 @@ export function apply(ctx, config = {}) {
       configured: Boolean(jar.wr_skey),
       hasCookie: Boolean(jar.wr_skey),
       hasBase: Boolean(base),
-      running: state.running,
+      // 用内存里的在跑标记，不用持久化的 state.running：后者可能是上次进程被强杀
+      // 留下的僵尸值，前端会据此一直轮询、并把主按钮锁成「停止打卡」。
+      running: inFlight,
       lastRunAt: state.lastRunAt,
       lastDayDone: state.lastDay === ymdLocal(new Date()) && state.lastDone > 0,
       minutes: minutesNow(),
@@ -925,6 +961,10 @@ export function apply(ctx, config = {}) {
     // 还没到点，什么都不做
     if (now < target) return;
 
+    // 已经有一轮在跑：这一分钟什么都没启动，不该消耗当天的补跑次数。
+    // （v1.3.1 之前没有这条守卫，一轮卡住的任务会把 3 次机会全耗光。）
+    if (inFlight) return;
+
     // 换了一天，重置尝试计数
     if (state.autoDay !== today) {
       state.autoDay = today;
@@ -932,11 +972,18 @@ export function apply(ctx, config = {}) {
     }
     // 一天最多补 3 次，避免接口异常时无脑重试
     if (state.autoAttempts >= 3) return;
-    state.autoAttempts += 1;
-    save().catch(() => {});
 
-    // 成功后 checkin 会写 state.lastDay/lastDone，下一轮 tick 自然被顶部守卫拦住
-    checkin({}).catch(() => {});
+    // 成功后 checkin 会写 state.lastDay/lastDone，下一轮 tick 自然被顶部守卫拦住。
+    // 只在**失败**时记账：成功那一轮不该占额度，否则今天已经打卡成功、用户又手动
+    // 清了状态，也会被残留计数挡在门外。
+    checkin({}).then((res) => {
+      if (res?.ok || res?.alreadyDone) return;
+      state.autoAttempts += 1;
+      save().catch(() => {});
+    }).catch(() => {
+      state.autoAttempts += 1;
+      save().catch(() => {});
+    });
   }, AUTO_TICK_MS);
   tickTimer.unref?.(); // 不要阻止进程退出
 

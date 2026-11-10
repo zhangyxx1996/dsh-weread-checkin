@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
      * 版本号兜底值：正常情况下用 Host 经 status 下发的 `version`（读自
      * package.json），这里只在接口没返回时兜底，避免界面出现空白。
      */
-    const PLUGIN_VERSION = '1.3.0';
+    const PLUGIN_VERSION = '1.3.1';
     /** 可选的「打卡时长」（分钟）：一次点击最多补这么多。 */
     const MINUTE_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
     /** 可选的「每日目标」（分钟）：进度条与日历达标都按它判定。 */

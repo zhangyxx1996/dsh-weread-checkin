@@ -1,0 +1,17 @@
+{
+  "name": "weread-checkin-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "微信读书打卡 —— 独立桌面客户端",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "start": "electron .",
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "electron": "^38.8.6",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}

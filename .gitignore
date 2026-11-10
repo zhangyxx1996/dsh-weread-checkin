@@ -13,6 +13,14 @@ _*.mjs
 node_modules/
 *.log
 
+# 桌面客户端（desktop/）：源码与 lock 进版本，依赖、打包产物、临时截图不进
+.desktop-cache/
+.electron-cache/
+.npm-cache/
+desktop/node_modules/
+desktop/dist/
+desktop/_*.png
+
 # 开发资料（调研报告 / PPT 生成脚本 / PPT / 接口探测）：
 # 和代码放在一起方便找，但不进版本库
 docs/
